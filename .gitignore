@@ -1,0 +1,33 @@
+# Zig build products
+zig-out/
+.zig-cache/
+
+# OpenBench / Makefile drops the binary in the repo root under an arbitrary name
+/koji
+/Engine-*
+
+# Testing artefacts. Opening books are large and fetched on demand; game records
+# and engine logs are outputs, not sources.
+books/
+*.pgn
+*.epd.log
+fastchess*.log
+config.json
+
+# fastchess is built from source into a sibling dir, not vendored
+/tools/
+
+# NNUE networks are large binaries; they are released as assets, not committed.
+# Note that nets/*.txt metadata IS tracked, so provenance stays in the repo.
+nets/*.bin
+nets/*.nnue
+
+# Self-play training data
+data/
+
+# Vendored docs fallback (only used if a Zig install ever lacks doc/langref.html)
+docs/vendor/
+
+# NOTE: docs/testlog.md is deliberately NOT ignored. It is the project record —
+# the one thing git history cannot reconstruct, because failed branches get
+# deleted and their SPRT results would vanish with them.
