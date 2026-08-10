@@ -42,8 +42,12 @@ attribution.
 When a technique cannot be implemented from available descriptions, the rule is to stop and ask a
 human, not to fetch the source instead.
 
-This is enforced by the tooling: see [`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)
-and the fetch allowlist in [`.claude/settings.json`](.claude/settings.json).
+This is enforced by the tooling rather than asserted:
+[`.claude/hooks/guard.sh`](.claude/hooks/guard.sh) blocks fetches that resolve to source — raw file
+hosts, GitHub's `/blob/` and `/raw/` views, and a pull request's diff tab — while leaving the
+discussion on that same pull request reachable. The researcher agent
+([`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)) and the allowlist in
+[`.claude/settings.json`](.claude/settings.json) narrow it further.
 
 CPW content is CC BY-SA 3.0, so it is linked and paraphrased, never pasted into this repository.
 

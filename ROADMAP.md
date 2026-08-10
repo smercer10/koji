@@ -31,8 +31,9 @@ options. **Met — Phase 0 complete.**
 - [ ] Zobrist hashing, fixed seed
 - [ ] FEN parsing and output
 
-**Exit criterion:** perft exact on all standard positions to depth ≥6; perft NPS recorded as the
-never-regress baseline.
+**Exit criterion:** perft exact on all standard positions to depth ≥6, checked against
+`testdata/perft.epd` (the oracle — node counts transcribed from CPW, not from memory); perft NPS
+recorded as the never-regress baseline.
 
 ## Phase 2 — Search + HCE
 

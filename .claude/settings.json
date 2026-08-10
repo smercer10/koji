@@ -26,8 +26,7 @@
       "WebFetch(domain:chessprogramming.org)",
       "WebFetch(domain:www.chessprogramming.org)",
       "WebFetch(domain:ziglang.org)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:github.com)"
     ],
 
     "deny": [
@@ -38,18 +37,22 @@
       "Bash(gh api -X POST:*)",
       "Bash(gh api --method PATCH:*)",
       "Bash(gh api -X PATCH:*)",
-      "Bash(gh issue create --repo:*)",
-      "Bash(gh issue create -R:*)",
-      "Bash(gh pr create --repo:*)",
-      "Bash(gh pr create -R:*)",
-      "Bash(gh issue:* --repo:*)",
-      "Bash(gh issue:* -R:*)",
-      "Bash(gh pr:* --repo:*)",
-      "Bash(gh pr:* -R:*)"
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   },
 
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",

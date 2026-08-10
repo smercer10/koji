@@ -51,9 +51,11 @@ koji is developed with Claude Code. The development setup lives in the repositor
 - Techniques and their origins: [CREDITS.md](CREDITS.md)
 
 Agents work from published descriptions — the Chess Programming Wiki, papers, and PR or issue
-discussion — and not from other engines' source code. This is enforced by
-[`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md) and the fetch allowlist in
-[`.claude/settings.json`](.claude/settings.json).
+discussion — and not from other engines' source code. A hook
+([`.claude/hooks/guard.sh`](.claude/hooks/guard.sh)) blocks fetches that resolve to source, including
+a pull request's diff while leaving its discussion reachable; the researcher agent
+([`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)) and the allowlist in
+[`.claude/settings.json`](.claude/settings.json) narrow it further.
 
 From Phase 3 onward, every merge affecting playing strength is gated on an SPRT result, recorded in
 `docs/testlog.md` whether it passed or failed.

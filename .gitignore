@@ -14,7 +14,7 @@ books/
 fastchess*.log
 config.json
 
-# fastchess is built from source into a sibling dir, not vendored
+# fastchess and other shared tools are built from source here, never vendored
 /tools/
 
 # NNUE networks are large binaries; they are released as assets, not committed.
