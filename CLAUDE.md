@@ -62,7 +62,7 @@ usable when strength regresses. `main` is always green and always the strongest 
 ## Code review
 `/code-review` on the branch before merging — only for changes to the TT, threading/atomics,
 make/unmake, or the NNUE accumulator. Everywhere else SPRT is the authority.
-`/code-review ultra <paths>` once per phase, over the merged and tagged subsystem, plus `/audit` for
+`/code-review max <paths>` once per phase, over the merged and tagged subsystem, plus `/audit` for
 the docs and `.claude/` setup. Why a decision was made goes in a comment at its code site;
 `docs/decisions.md` is only for the few with no code site — read it before removing a rule that looks
 like an obstacle.

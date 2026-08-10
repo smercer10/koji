@@ -9,7 +9,7 @@ description: Check the docs and .claude setup for drift — stale claims, dead r
 invisible until they mislead a session: a path that moved, a rule stated in two places that have
 since disagreed, a paragraph nobody reads.
 
-**Run at each phase boundary**, alongside the phase's `/code-review ultra`. Also run it after a
+**Run at each phase boundary**, alongside the phase's `/code-review max`. Also run it after a
 material change to Claude Code itself, since this setup was built against a moving target.
 
 ## Checks

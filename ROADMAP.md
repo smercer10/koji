@@ -30,6 +30,10 @@ options. **Met — Phase 0 complete.**
 - [ ] make/unmake
 - [ ] Zobrist hashing, fixed seed
 - [ ] FEN parsing and output
+- [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
+      wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
+      `.claude/hooks/` and `.claude/settings.json` — the last two were hand-tested
+      only, and settings.json is where both of this phase's real defects were found
 
 **Exit criterion:** perft exact on all standard positions to depth ≥6, checked against
 `testdata/perft.epd` (the oracle — node counts transcribed from CPW, not from memory); perft NPS
@@ -42,6 +46,9 @@ recorded as the never-regress baseline.
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
+- [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
+- [ ] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
+      `position ... moves ...` line would otherwise kill the engine mid-game
 
 **Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a
 complete game on Lichess.

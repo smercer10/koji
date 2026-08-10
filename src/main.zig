@@ -79,7 +79,7 @@ fn bench(out: *Io.Writer) Io.Writer.Error!void {
 
 fn perftCommand(out: *Io.Writer, args: []const []const u8) !void {
     if (args.len < 1) {
-        try out.writeAll("usage: koji perft <depth> [fen]\n");
+        try out.writeAll("usage: koji perft <depth>\n");
         try out.flush();
         return error.MissingArgument;
     }
