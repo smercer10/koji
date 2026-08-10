@@ -53,6 +53,21 @@ recorded as the never-regress baseline.
 **Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a
 complete game on Lichess.
 
+> **Tagging and versions — for consideration, decide before the first public build.** `phase-N` tags
+> mark internal milestones and stop after Phase 6. Release tags are a separate namespace and start
+> *here*, not at Phase 6: the exit criterion above is the first time anyone else runs the binary,
+> rating lists identify engines by version string, and `id name koji <version>` is what a tester
+> reports. Untagged commits behind a public appearance are unciteable later.
+>
+> Proposed scheme `v<major>.<minor>.<patch>` — major for a generational change (HCE→NNUE, a new NNUE
+> architecture), minor for a strength release, patch for bugfixes. Deliberately not semver: there is
+> no API, so "breaking" has nothing to attach to.
+>
+> Release step: bump `version` in `src/main.zig`, then tag to match. Keep it a source constant rather
+> than deriving it from git, which breaks building from a tarball and buys nothing here. Worth a test
+> asserting the constant and the tag agree — a version string that disagrees with its tag is the kind
+> of sloppiness testers notice and remember.
+
 ## Phase 3 — The SPRT era
 
 - [ ] Null-move pruning

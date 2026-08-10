@@ -2,8 +2,9 @@
 
 A UCI chess engine written in Zig 0.16, with no external dependencies.
 
-Current state: **Phase 0 — scaffolding.** The build, test and benchmark spine works and the UCI
-handshake is well-formed; there is no move generation or search yet. See [ROADMAP.md](ROADMAP.md).
+Current state: **Phase 0 complete.** The build, test and benchmark spine works and the UCI handshake
+is well-formed. The engine cannot play yet: board representation and move generation are Phase 1.
+See [ROADMAP.md](ROADMAP.md).
 
 ## What this is
 
