@@ -31,23 +31,24 @@ as the engine acquires a board representation, a search, and an evaluation — n
 
 ## How this project is built
 
-koji is developed with Claude Code (Anthropic's coding agent). The development setup is in the
-repository rather than hidden, because the method is the part people will reasonably want to check:
+koji is developed with Claude Code. The development setup lives in the repository:
 
 - Agent instructions, permissions, hooks and skills: [`.claude/`](.claude/) and
   [`CLAUDE.md`](CLAUDE.md)
-- Plan and phase exit criteria: [ROADMAP.md](ROADMAP.md)
-- Every strength test that has been run, including the failed ones:
-  [`docs/testlog.md`](docs/testlog.md)
-- Techniques and where they came from: [CREDITS.md](CREDITS.md)
+- Phases and their exit criteria: [ROADMAP.md](ROADMAP.md)
+- Every strength test run, including the ones that failed: [`docs/testlog.md`](docs/testlog.md)
+- Techniques and their origins: [CREDITS.md](CREDITS.md)
 
-Agents work from published descriptions — the Chess Programming Wiki, papers, and PR/issue
-discussion — and never from another engine's source code. The configuration that enforces that is
+Agents work from published descriptions — the Chess Programming Wiki, papers, and PR or issue
+discussion — and not from other engines' source code. This is enforced by
 [`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md) and the fetch allowlist in
 [`.claude/settings.json`](.claude/settings.json).
 
+From Phase 3 onward, every merge affecting playing strength is gated on an SPRT result, recorded in
+`docs/testlog.md` whether it passed or failed.
+
 If you are an engine author and would rather your engine were not named here, or not used as a
-testing opponent, open an issue and it will be done.
+testing opponent, open an issue and it will be removed.
 
 ## Licence
 

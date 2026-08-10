@@ -12,10 +12,12 @@
 never shipped) · `./zig-out/bin/koji uci|bench|perft <depth>|epd <file>` · `make EXE=Engine-X`.
 
 ## Zig 0.16: never write an unfamiliar API from memory
-Training data is mostly Zig 0.13/0.14 and **will not compile**. Both sources are local and large —
-**grep, don't read**. Signatures: `grep -rn "pub fn <name>" /home/sam/.local/zig/zig-x86_64-linux-0.16.0/lib/std/`.
-Language and optimisation: `grep -n <thing> /home/sam/.local/zig/zig-x86_64-linux-0.16.0/doc/langref.html`.
-Breaks verified against this install, so the common cases need no lookup: `@Type` is gone →
+Training data is mostly Zig 0.13/0.14 and **will not compile**. Both sources ship inside the toolchain, so
+ask the install where they are instead of hardcoding a path (`zig env` emits ZON in 0.16, not JSON), and
+**grep, don't read** — both are large.
+`STD=$(zig env | sed -n 's/^ *\.std_dir = "\(.*\)",$/\1/p')`
+Signatures: `grep -rn "pub fn <name>" "$STD/"` · language and optimisation: `grep -n <x> "$STD/../../doc/langref.html"`
+Breaks verified against a 0.16.0 install, so the common cases need no lookup: `@Type` is gone →
 `@Int`/`@Struct`/`@Pointer`/`@Tuple` · all I/O goes through `std.Io` (`var fw: Io.File.Writer =
 .init(.stdout(), io, &buf);` then `&fw.interface`, and **flush**) · entry point is `pub fn main(init:
 std.process.Init) !void` · `addExecutable`/`addTest` require `root_module` · `trimLeft`/`trimRight` →
@@ -27,9 +29,10 @@ runtime) · no pointers in packed structs.
 `@Vector` + `std.simd` (NNUE inference) · `@popCount`/`@ctz`/`@clz`/`@byteSwap` (bitboards) ·
 labeled-switch `continue` for branch-predictor-friendly state machines (UCI parsing, movegen staging) ·
 `@prefetch` (TT probes) · `inline for` · packed structs · explicit `align` for cache lines · comptime
-table generation (Zobrist, magics, PSQT). This CPU is Zen 3: **hardware PEXT is fast**, so PEXT magics
-are the default with a plain-magic fallback for other targets. **`@branchHint(.likely)` on a branch that
-isn't actually likely is slower than no hint at all** — hint only where profiling showed the skew.
+table generation (Zobrist, magics, PSQT).
+**`@branchHint(.likely)` on a branch that isn't actually likely is slower than no hint at all** — hint only
+where profiling showed the skew. Same rule for the target: PEXT is fast on Zen 3+ and Haswell+ and slow on
+older AMD, so detect it and keep both PEXT and plain magics rather than compiling the assumption in.
 
 ## Invariants
 - `bench` is deterministic across runs **and machines** — identical node counts on AVX2 and non-AVX2
@@ -39,10 +42,8 @@ isn't actually likely is slower than no hint at all** — hint only where profil
 - A release build advertises only real UCI options. `Hash` and `Threads` are mandatory.
 
 ## Architecture
-- `src/main.zig` — CLI dispatch and the UCI loop. Output *shapes* are contracts: OpenBench parses
-  `<nodes> nodes <nps> nps` from `bench`; GUIs parse the `uci` block.
-- `build.zig` pins Zig 0.16.0 at comptime and gives every module an explicit `optimize` — a null one
-  emits no `-O` flag and silently inherits, which is how you get an unexplained 3x in a bench.
+- `src/main.zig` — CLI dispatch and the UCI loop. Output *shapes* are contracts: OpenBench parses `<nodes> nodes <nps> nps`; GUIs parse the `uci` block.
+- `build.zig` pins Zig 0.16.0 at comptime and gives every module an explicit `optimize` — a null one silently inherits, which is how you get an unexplained 3x in a bench.
 - Phase 1 splits out `board.zig`, `movegen.zig`; then `search.zig`, `eval.zig`, `tt.zig`, `nnue.zig`.
 - Tests sit beside the code they test and **only run if reachable from `main.zig`'s import graph** — a file nothing imports is silently untested.
 - Once those exist: the accumulator stack unwinds exactly with make/unmake; the TT never returns a move illegal in the current position.
@@ -55,11 +56,13 @@ build + green tests + SPRT pass or proven bench-neutrality; record the outcome i
 **either way — failures are the point**, since deleted branches leave no trace. **Squash-merge**, so every
 commit on `main` is one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
 usable when strength regresses. `main` is always green and always the strongest version.
-**Never run two measurements at once**: an SPRT owns all 16 threads and a concurrent run invalidates
+**Never run two measurements at once**: an SPRT owns the whole machine and a concurrent run invalidates
 *both*. Serialise anything that measures; parallel worktrees are for correctness and docs work only.
-Run `/code-review` before the SPRT **only** for changes to the TT, threading/atomics, make/unmake, or the
-NNUE accumulator — the silent-corruption zones perft and SPRT both miss; elsewhere SPRT is the authority.
-At each phase boundary, tag the commit and `/code-review ultra <paths>` the subsystem it built.
+
+## Code review
+`/code-review` on the branch before merging — only for changes to the TT, threading/atomics,
+make/unmake, or the NNUE accumulator. Everywhere else SPRT is the authority.
+`/code-review ultra <paths>` once per phase, over the merged and tagged subsystem.
 
 ## Delegation
 This session does all design and implementation. Chess research → `cpw-researcher`; broad code search →
@@ -70,8 +73,8 @@ This session does all design and implementation. Chess research → `cpw-researc
    issue *discussion* (the thread, not the diff). `bullet`, `fastchess`, OpenBench and the UCI spec are
    shared tools, not engines, and are read normally. If a technique genuinely cannot be built from
    available descriptions, **stop and ask the human** — never fetch the source instead.
-2. **Never reference an AGPL or unlicensed engine** in any form. Check the exclusion list in CREDITS.md
-   before proposing a new reference, and verify licences via the GitHub API, never from memory.
+2. **Never reference an AGPL or unlicensed engine** in any form. Check the licence with
+   `gh api repos/<owner>/<repo> --jq .license.spdx_id` before proposing a reference — never from memory.
 3. **Write to the project, never to a person.** Commits, PRs and our own issues are fine. Comments,
    reviews, replies, TalkChess/Discord/Lichess messages are not — draft them for the human to send.
    **Never assess a plagiarism or licensing complaint about your own output**; surface it unanswered.

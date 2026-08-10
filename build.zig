@@ -30,10 +30,9 @@ pub fn build(b: *std.Build) void {
         "Prioritize performance, safety, or binary size (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
-    // SPSA tuning parameters become UCI options only when this is set. It must stay
-    // off by default: a shipped build that advertises ~100 internal tuning knobs
-    // breaks GUIs, and it is the one complaint CCRL has raised directly against an
-    // engine in this class. Tuning runs pass -Dtunables explicitly.
+    // SPSA tuning parameters become UCI options only when this is set, and it stays
+    // off by default: a build advertising dozens of internal tuning knobs breaks GUIs
+    // that enumerate options. Tuning runs pass -Dtunables explicitly.
     const tunables = b.option(
         bool,
         "tunables",

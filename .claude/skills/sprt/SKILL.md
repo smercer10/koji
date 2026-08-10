@@ -28,9 +28,15 @@ git switch <feat> && zig build -Doptimize=ReleaseFast && cp zig-out/bin/koji /tm
 
 ## Run it
 
-Time control `8+0.08`, `-repeat -recover`, `-concurrency 14` on this machine (16 threads, leaving
-headroom so the engines are not fighting the harness for CPU). Use an UHO-style opening book — the
-OpenBench default. **Verify the exact book filename when fetching it**; books are gitignored.
+Time control `8+0.08`, with `-repeat -recover`. Set concurrency from the machine rather than a fixed
+number — leave two threads spare so the engines are not fighting the harness for CPU:
+
+```
+CONCURRENCY=$(( $(nproc) - 2 ))
+```
+
+Use an UHO-style opening book, the OpenBench default. **Verify the exact book filename when fetching
+it**; books are gitignored.
 
 fastchess is built from source into `tools/fastchess/` (gitignored — it is a tool, not a dependency).
 
@@ -38,7 +44,7 @@ fastchess is built from source into `tools/fastchess/` (gitignored — it is a t
 ./tools/fastchess/fastchess \
   -engine cmd=/tmp/koji-test name=test \
   -engine cmd=/tmp/koji-base name=base \
-  -each tc=8+0.08 -rounds 2 -repeat -recover -concurrency 14 \
+  -each tc=8+0.08 -rounds 2 -repeat -recover -concurrency $CONCURRENCY \
   -openings file=books/<book>.epd format=epd order=random \
   -sprt elo0=0 elo1=5 alpha=0.05 beta=0.05
 ```
