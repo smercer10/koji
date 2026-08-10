@@ -30,6 +30,9 @@ options. **Met — Phase 0 complete.**
 - [ ] make/unmake
 - [ ] Zobrist hashing, fixed seed
 - [ ] FEN parsing and output
+- [ ] CI on push: `zig build test` and a release build. Then revisit protection on
+      `main` — required status checks are the part worth having, and there was nothing
+      for them to check at Phase 0
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
       `.claude/hooks/` and `.claude/settings.json` — the last two were hand-tested
