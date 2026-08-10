@@ -5,6 +5,17 @@ A UCI chess engine written in Zig 0.16, with no external dependencies.
 Current state: **Phase 0 — scaffolding.** The build, test and benchmark spine works and the UCI
 handshake is well-formed; there is no move generation or search yet. See [ROADMAP.md](ROADMAP.md).
 
+## What this is
+
+An experiment in agentic development, run against a problem that scores itself: how far the method
+can go, and whether it discovers anything on the way. Chess engines suit that job — strength is
+settled in Elo rather than argument, and there are thirty years of published technique to build
+from. The test log records every idea tried and its result, including the failures.
+
+Nearly all of koji is written by Claude Code, working from published descriptions rather than from
+other engines' source. Zig helps hold that line: there is very little existing Zig engine code to
+reproduce, and idiomatic Zig does not map line by line from other languages regardless.
+
 ## Build
 
 Requires Zig 0.16.0 exactly — `build.zig` enforces this at comptime.

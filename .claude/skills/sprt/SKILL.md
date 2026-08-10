@@ -52,8 +52,8 @@ fastchess is built from source into `tools/fastchess/` (gitignored — it is a t
 **Run this via background Bash, never in the foreground** — it takes hours and would block the
 session for all of them.
 
-**Never run two measurements at once.** An SPRT owns the whole machine; a second one running beside
-it invalidates *both* results. This is the reason parallel worktrees are banned for strength work.
+**Before starting: check nothing else is measuring.** An SPRT owns the whole machine and a
+concurrent run invalidates both results. (Policy and rationale: CLAUDE.md and `docs/decisions.md`.)
 
 ## Record it
 
