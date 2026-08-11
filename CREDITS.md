@@ -1,6 +1,8 @@
 # Credits
 
-koji is original code. It is not a port, a translation, or a cleanup of another engine.
+koji is written by a human and Claude Code working together. It is not a port, a translation, or a
+cleanup of another engine: no other engine's source is read during development. [Clean
+room](#clean-room) below covers how that is held, and where the claim stops.
 
 What it takes from the community is *ideas*, which are published and belong to the people who worked
 them out. This file names them.
@@ -49,6 +51,10 @@ discussion on that same pull request reachable. The researcher agent
 ([`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)) and the allowlist in
 [`.claude/settings.json`](.claude/settings.json) narrow it further.
 
+All of that constrains what the agent reads. It cannot constrain what a model already knows —
+Claude's training data is not auditable and contains engine source. So this is a claim about
+process, which is the strongest one available here, and not a guarantee about every line.
+
 CPW content is CC BY-SA 3.0, so it is linked and paraphrased, never pasted into this repository.
 
 ## Licences
@@ -67,5 +73,5 @@ list here — the check is one command and belongs at the moment of use.
 
 ## Naming
 
-If you are an engine author and would rather your engine were not named in this repository, or not
-used as a testing opponent, open an issue and it will be removed. No case to argue.
+If you recognise your code here, or you would rather your engine were not named in this repository
+or used as a testing opponent, open an issue — it gets fixed or removed. No case to argue.
