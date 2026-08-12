@@ -11,6 +11,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const Io = std.Io;
+const attacks = @import("attacks.zig");
 
 /// Bumped per release; reported by `uci` and `--version`.
 const version = "0.0.0";
@@ -25,6 +26,10 @@ pub fn main(init: std.process.Init) !void {
     // UCI is a line protocol against a GUI that may be waiting on us, so every
     // command path flushes before it returns rather than relying on scope exit.
     defer out.flush() catch {};
+
+    // Sliding attack tables, before any command runs. Milliseconds, measured —
+    // see docs/testlog.md.
+    attacks.init();
 
     const args = try init.minimal.args.toSlice(arena);
     const command = if (args.len > 1) args[1] else "uci";
@@ -175,9 +180,10 @@ fn eql(a: []const u8, b: []const u8) bool {
 // --- tests -------------------------------------------------------------------
 
 test {
-    // Pulls board.zig into the test graph: a file main.zig never imports is
-    // silently untested (CLAUDE.md). Drop this once the engine imports it for real.
+    // Pulls the engine modules into the test graph: a file whose tests nothing
+    // references is silently untested (CLAUDE.md).
     _ = @import("board.zig");
+    _ = @import("attacks.zig");
 }
 
 test "bench output matches the OpenBench contract" {
