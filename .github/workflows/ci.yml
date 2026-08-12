@@ -1,0 +1,90 @@
+# The remote gate. Local hooks (.claude/hooks/) only cover edits made through
+# Claude Code; this covers everything, including a commit typed by hand.
+#
+# Zig is installed by hand rather than with a setup action. A third-party action
+# is code running inside the workflow, and the project's dependency count is zero
+# — CI is exactly where that erodes first. The install below is a download pinned
+# by SHA-256: trust in a number instead of in a repository.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Every branch reaches main through a PR, so push+pull_request covers everything
+# without running twice. A new push to a PR cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Duplicated from build.zig, and safe: build.zig pins 0.16.0 at comptime, so a
+  # wrong version here is a hard compile error naming both versions, never a
+  # silent test run against the wrong compiler.
+  ZIG_VERSION: 0.16.0
+  # From https://ziglang.org/download/index.json, x86_64-linux.
+  ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Into RUNNER_TEMP, never the checkout: the toolchain ships thousands of
+      # .zig files under lib/, which would dirty the tree and be picked up by the
+      # fmt check below.
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/zig"
+          tarball="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          mkdir -p "$dir"
+          cd "$dir"
+
+          # ziglang.org asks automated downloads to prefer a community mirror and
+          # fall back to the canonical host only if they fail. The checksum is
+          # what makes an untrusted mirror safe, so it is verified per candidate:
+          # a corrupt or hostile mirror falls through to the next one instead of
+          # failing the build.
+          mirrors="$(curl -fsSL --max-time 30 https://ziglang.org/download/community-mirrors.txt | shuf -n 4)"
+          for base in $mirrors "https://ziglang.org/download/${ZIG_VERSION}"; do
+            echo "trying ${base}"
+            curl -fsSL --connect-timeout 10 --max-time 120 \
+              -o "$tarball" "${base}/${tarball}?source=github-ci" || continue
+            if echo "${ZIG_SHA256}  ${tarball}" | sha256sum -c -; then
+              found=1
+              break
+            fi
+          done
+          test -n "${found:-}" || { echo "no source served a Zig ${ZIG_VERSION} tarball matching ${ZIG_SHA256}"; exit 1; }
+
+          tar -xf "$tarball"
+          echo "${dir}/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: zig version
+
+      # Backstop for .claude/hooks/fmt.sh, which only ever sees Claude's edits.
+      - name: Format
+        run: zig fmt --check build.zig build.zig.zon src
+
+      - name: Test
+        run: zig build test
+
+      - name: Release build
+        run: zig build
+
+      # The OpenBench contract: `make EXE=<name>` drops a binary of exactly that
+      # name in the repo root, and `<binary> bench` prints a line OpenBench can
+      # parse. Verified by hand once at Phase 0 and otherwise unguarded.
+      - name: OpenBench build contract
+        run: |
+          set -euo pipefail
+          make EXE=Engine-CI
+          test -x ./Engine-CI
+          ./Engine-CI bench | tee /dev/stderr | tail -1 | grep -Eq '^[0-9]+ nodes [0-9]+ nps$'
