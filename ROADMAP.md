@@ -30,7 +30,7 @@ options. **Met — Phase 0 complete.**
 - [x] Protection on `main`: ruleset requiring the `ci` check, linear history, no deletion and
       no force-push. Repository admin bypasses, so an override is possible but deliberate —
       and since agent sessions push with that same token, the ruleset stops accidents, not us
-- [ ] Bitboards + mailbox
+- [x] Bitboards + mailbox
 - [ ] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [ ] make/unmake
 - [ ] Zobrist hashing, fixed seed
@@ -131,4 +131,6 @@ Notes that constrain earlier phases:
 Unordered, for the Phase-3+ era when work becomes try-it-and-measure. Moving something here is not a
 commitment to implement it.
 
-*(empty)*
+- Mailbox ablation: drop `Board.mailbox` and probe the type bitboards in `make()` instead;
+  `/bench` perft NPS both ways. The hybrid is CPW consensus, not a measurement — all mailbox
+  access goes through `put`/`remove`/`pieceAt`, so the experiment is contained.

@@ -174,6 +174,12 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 // --- tests -------------------------------------------------------------------
 
+test {
+    // Pulls board.zig into the test graph: a file main.zig never imports is
+    // silently untested (CLAUDE.md). Drop this once the engine imports it for real.
+    _ = @import("board.zig");
+}
+
 test "bench output matches the OpenBench contract" {
     var buf: [256]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
