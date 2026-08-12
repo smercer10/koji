@@ -31,7 +31,7 @@ options. **Met — Phase 0 complete.**
       no force-push. Repository admin bypasses, so an override is possible but deliberate —
       and since agent sessions push with that same token, the ruleset stops accidents, not us
 - [x] Bitboards + mailbox
-- [ ] PEXT magics with a plain-magic fallback for non-PEXT targets
+- [x] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [ ] make/unmake
 - [ ] Zobrist hashing, fixed seed
 - [ ] FEN parsing and output
@@ -64,6 +64,11 @@ complete game on Lichess.
 > (HCE→NNUE), minor = strength release, patch = bugfix. `phase-N` tags stay internal and stop after
 > Phase 6. Release step: bump `version` in `src/main.zig` (a source constant — git-derived breaks
 > tarball builds), tag to match, and keep a test asserting the two agree.
+>
+> Also at that point: the PEXT-vs-magic choice is comptime from the build target
+> (`src/attacks.zig`), which is exact for native builds but wrong for a distributed generic
+> binary — that needs per-target binaries or a one-time-startup CPUID dispatch, and the check must
+> be feature flag *plus* family (Excavator–Zen 2 report BMI2 but microcode PEXT).
 
 ## Phase 3 — The SPRT era
 
