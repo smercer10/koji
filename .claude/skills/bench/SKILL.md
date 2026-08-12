@@ -46,9 +46,12 @@ you what is *fast* — only what is legal. When a hot-path change is supposed to
 instructions, **verify that it did** rather than assuming:
 
 ```
-zig build-obj -OReleaseFast -femit-asm src/movegen.zig
 objdump -d zig-out/bin/koji | less
 ```
+
+(For a single function, `objdump -d --disassemble=<mangled name>`; find the name with
+`objdump -t zig-out/bin/koji | grep <fn>`. Bare `zig build-obj src/<file>.zig` does not work here —
+modules import `build_options`, which only `zig build` provides.)
 
 Concretely: did that `@Vector(16, i16)` become one `vpaddw`? Did `@branchHint` actually reorder the
 block? Did the bounds check vanish under ReleaseFast? Did the comptime table get materialised as
@@ -59,8 +62,7 @@ noise.
 
 ## Record it
 
-Append a `bench` entry to `docs/testlog.md`: nodes/sec before and after, repetitions, observed
-variance, and the `perf stat` figures that mattered.
+Append a `bench` entry to `docs/testlog.md` using the format block at the top of that file.
 
-`bench` node counts must stay **identical** across runs and machines. If a change alters the node
-count, that is not a speed change — it changed the search, and it needs an SPRT.
+If a change alters the bench **node count**, it is not a speed change — it changed the search, and
+it needs an SPRT.

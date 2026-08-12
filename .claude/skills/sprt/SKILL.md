@@ -44,22 +44,20 @@ fastchess is built from source into `tools/fastchess/` (gitignored — it is a t
 ./tools/fastchess/fastchess \
   -engine cmd=/tmp/koji-test name=test \
   -engine cmd=/tmp/koji-base name=base \
-  -each tc=8+0.08 -rounds 2 -repeat -recover -concurrency $CONCURRENCY \
+  -each tc=8+0.08 -rounds 25000 -repeat -recover -concurrency $CONCURRENCY \
   -openings file=books/<book>.epd format=epd order=random \
   -sprt elo0=0 elo1=5 alpha=0.05 beta=0.05
 ```
+
+`-rounds` is only a ceiling — the SPRT stops itself as soon as either LLR bound is hit.
 
 **Run this via background Bash, never in the foreground** — it takes hours and would block the
 session for all of them.
 
 **Before starting: check nothing else is measuring.** An SPRT owns the whole machine and a
-concurrent run invalidates both results. (Policy and rationale: CLAUDE.md and `docs/decisions.md`.)
+concurrent run invalidates both results. (Policy: CLAUDE.md, Workflow.)
 
 ## Record it
 
-Append to `docs/testlog.md` in the documented format: change, bounds, TC, book, LLR, Elo ±, games,
-bench, and notes.
-
-**Log failures too.** That is the entire point of the file — a failed branch gets deleted and takes
-its result with it, so an unrecorded failure will be retried in six months by someone with no way of
-knowing. A negative result is worth as much as a positive one.
+Append to `docs/testlog.md` using the format block at the top of that file. **Log failures too** —
+a deleted branch takes its result with it, and an unrecorded failure gets retried.

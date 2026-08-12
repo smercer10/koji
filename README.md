@@ -41,33 +41,19 @@ zig build                  # ReleaseFast by default
 The engine binary is also the tooling: `koji bench`, `koji perft <depth>` and `koji epd <file>`
 are subcommands rather than scripts, so they cannot drift out of sync with the engine they measure.
 
-## How it works
-
-Nothing is implemented yet, so there is nothing honest to describe here. This section gets filled in
-as the engine acquires a board representation, a search, and an evaluation — not before.
-
 ## How this project is built
 
 koji is developed with Claude Code under human direction — nothing reaches `main` without a human
-reviewing and merging it. The setup that makes that repeatable lives in the repository:
+reviewing and merging it. Agents research from published descriptions — the Chess Programming Wiki,
+papers, and PR or issue discussion — never from other engines' source code, and a hook blocks
+fetches that resolve to source. What that claim covers, how it is enforced, and where it stops:
+[CREDITS.md](CREDITS.md).
 
 - Agent instructions, permissions, hooks and skills: [`.claude/`](.claude/) and
   [`CLAUDE.md`](CLAUDE.md)
 - Phases and their exit criteria: [ROADMAP.md](ROADMAP.md)
 - Every strength test run, including the ones that failed: [`docs/testlog.md`](docs/testlog.md)
 - Techniques and their origins: [CREDITS.md](CREDITS.md)
-
-Agents work from published descriptions — the Chess Programming Wiki, papers, and PR or issue
-discussion — and not from other engines' source code. A hook
-([`.claude/hooks/guard.sh`](.claude/hooks/guard.sh)) blocks fetches that resolve to source, including
-a pull request's diff while leaving its discussion reachable; the researcher agent
-([`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)) and the allowlist in
-[`.claude/settings.json`](.claude/settings.json) narrow it further. That constrains what the agent
-reads, not what a model already knows from training — the honest limit of the claim, and the
-reasoning is in [CREDITS.md](CREDITS.md).
-
-From Phase 3 onward, every merge affecting playing strength is gated on an SPRT result, recorded in
-`docs/testlog.md` whether it passed or failed.
 
 If you recognise your code here, or you would rather koji did not name your engine or use it as a
 testing opponent, open an issue — it gets fixed or removed. No case to argue.

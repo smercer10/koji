@@ -16,6 +16,6 @@ mid-task. It is a default, not a gate: to work on something off-roadmap, just sa
 2. State in one or two sentences: the current phase, the next task, and anything the testlog says
    was already tried and failed here.
 3. If `main` is dirty or a feature branch is unmerged, say so and stop — finish that first.
-4. Otherwise create `feat/<short>` off `main`.
+4. Otherwise `git pull --ff-only` on `main`, then create `feat/<short>` off it.
 5. Enter plan mode for anything non-trivial. Skip planning only when the change is small and
    obvious (a constant, a typo, a test).

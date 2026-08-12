@@ -25,18 +25,19 @@ options. **Met — Phase 0 complete.**
 
 ## Phase 1 — Board & movegen
 
+- [ ] CI on push: `zig build test` and a release build — first, so everything after it is
+      remotely checked. Then revisit protection on `main` — required status checks are the
+      part worth having, and there was nothing for them to check at Phase 0
 - [ ] Bitboards + mailbox
 - [ ] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [ ] make/unmake
 - [ ] Zobrist hashing, fixed seed
 - [ ] FEN parsing and output
-- [ ] CI on push: `zig build test` and a release build. Then revisit protection on
-      `main` — required status checks are the part worth having, and there was nothing
-      for them to check at Phase 0
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
-      `.claude/hooks/` and `.claude/settings.json` — the last two were hand-tested
-      only, and settings.json is where both of this phase's real defects were found
+      `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,
+      where every real defect so far has been found (settings.json at Phase 0; guard.sh
+      bypasses and an unresolvable /sprt command in the pre-Phase-1 review)
 
 **Exit criterion:** perft exact on all standard positions to depth ≥6, checked against
 `testdata/perft.epd` (the oracle — node counts transcribed from CPW, not from memory); perft NPS
@@ -56,20 +57,11 @@ recorded as the never-regress baseline.
 **Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a
 complete game on Lichess.
 
-> **Tagging and versions — for consideration, decide before the first public build.** `phase-N` tags
-> mark internal milestones and stop after Phase 6. Release tags are a separate namespace and start
-> *here*, not at Phase 6: the exit criterion above is the first time anyone else runs the binary,
-> rating lists identify engines by version string, and `id name koji <version>` is what a tester
-> reports. Untagged commits behind a public appearance are unciteable later.
->
-> Proposed scheme `v<major>.<minor>.<patch>` — major for a generational change (HCE→NNUE, a new NNUE
-> architecture), minor for a strength release, patch for bugfixes. Deliberately not semver: there is
-> no API, so "breaking" has nothing to attach to.
->
-> Release step: bump `version` in `src/main.zig`, then tag to match. Keep it a source constant rather
-> than deriving it from git, which breaks building from a tarball and buys nothing here. Worth a test
-> asserting the constant and the tag agree — a version string that disagrees with its tag is the kind
-> of sloppiness testers notice and remember.
+> **Decide before the first public build:** release tags `v<major>.<minor>.<patch>` start at this
+> phase's exit — the first time anyone else runs the binary — with major = generational change
+> (HCE→NNUE), minor = strength release, patch = bugfix. `phase-N` tags stay internal and stop after
+> Phase 6. Release step: bump `version` in `src/main.zig` (a source constant — git-derived breaks
+> tarball builds), tag to match, and keep a test asserting the two agree.
 
 ## Phase 3 — The SPRT era
 
@@ -93,14 +85,9 @@ becomes the project's real changelog.
 - [ ] int16/int8 quantisation
 
 **Exit criterion:** net beats HCE by >150 Elo at matched time control; data provenance 100%
-self-generated and documented; **`bench` still identical between AVX2 and non-AVX2 builds**.
-
-> **The determinism trap — decide this at Phase 4's design step, not after a mismatch appears.**
-> `-Dcpu=native` is right for local speed, but a native build and a portable build must still
-> produce the *same node count*: OpenBench requires cross-machine determinism, and SPRT comparisons
-> are worthless without it. Integer inference preserves this; floating-point accumulation does not,
-> because SIMD width changes the summation order. Quantise to int16/int8 and keep every eval path
-> integer.
+self-generated and documented; **`bench` still identical between AVX2 and non-AVX2 builds**
+(the bench invariant in CLAUDE.md — decide the integer quantisation scheme at the design step,
+not after a mismatch appears).
 
 ## Phase 5 — Scaling & tuning
 
@@ -125,23 +112,17 @@ Notes that constrain earlier phases:
 
 - **Lichess:** a BOT account must be a *fresh account that has never played a game*, then upgraded
   via the API token, and run through `lichess-bot`. Bots are bound by Lichess ToS.
-- **OpenBench compatibility** is built in at Phase 0 because it is nearly free then and annoying to
-  retrofit: a `Makefile` accepting `EXE=` and `CC=`/`CXX=`, a binary named exactly `EXE`, `EVALFILE=`
-  once NNUE lands, `./binary bench` printing `<nodes> nodes <nps> nps` bit-deterministically across
-  runs and machines, and mandatory `Hash` and `Threads` UCI options.
+- **OpenBench contract** (built in at Phase 0): a `Makefile` accepting `EXE=` and `CC=`/`CXX=`, a
+  binary named exactly `EXE`, `EVALFILE=` once NNUE lands, `./binary bench` printing
+  `<nodes> nodes <nps> nps` (deterministic — the bench invariant in CLAUDE.md), and mandatory
+  `Hash` and `Threads` UCI options.
 - **Do not solicit rating-list inclusion.** Publish releases and let testers decide. Answer their
   requests quickly when they come.
+- **The novelties list starts at Phase 3, not here:** every technique that appears genuinely novel
+  is recorded in `docs/testlog.md` with its ablation result as it lands, so the published list is a
+  by-product. Re-run ablations periodically — old gains decay as the engine around them changes.
 
 ---
-
-## Give-back is not a Phase 6 activity
-
-It starts as soon as there is anything to give. From **Phase 3**, every technique that appears
-genuinely novel is recorded in `docs/testlog.md` with its ablation result, so the published list is
-a by-product of ordinary work rather than a retrospective scramble.
-
-Related discipline: **re-run ablations periodically.** A technique that gained 8 Elo two years and
-forty patches ago may be worth nothing today, and re-testing is the only way to find out.
 
 ## Candidate ideas
 

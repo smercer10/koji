@@ -63,12 +63,11 @@ usable when strength regresses. `main` is always green and always the strongest 
 `/code-review` on the branch before merging — only for changes to the TT, threading/atomics,
 make/unmake, or the NNUE accumulator. Everywhere else SPRT is the authority.
 `/code-review max <paths>` once per phase, over the merged and tagged subsystem, plus `/audit` for
-the docs and `.claude/` setup. Why a decision was made goes in a comment at its code site;
-`docs/decisions.md` is only for the few with no code site — read it before removing a rule that looks
-like an obstacle.
+the docs and `.claude/` setup. Why a decision was made lives in a comment where it is enforced —
+read it before removing a rule that looks like an obstacle.
 
 ## Delegation
-This session does all design and implementation. Chess research → `cpw-researcher`; broad code search →
+This session does all design and implementation. Chess research → `technique-researcher`; broad code search →
 `Explore`; long SPRT and deep perft → **background Bash**, not subagents. Never delegate what to build.
 
 ## Four hard rules
