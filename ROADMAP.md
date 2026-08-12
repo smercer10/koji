@@ -25,9 +25,10 @@ options. **Met — Phase 0 complete.**
 
 ## Phase 1 — Board & movegen
 
-- [ ] CI on push: `zig build test` and a release build — first, so everything after it is
-      remotely checked. Then revisit protection on `main` — required status checks are the
-      part worth having, and there was nothing for them to check at Phase 0
+- [x] CI on push and PR: format, `zig build test`, release build, OpenBench `make` contract —
+      first, so everything after it is remotely checked
+- [ ] Protection on `main`: require the `ci` check — the part worth having, and there was
+      nothing for a status check to check at Phase 0
 - [ ] Bitboards + mailbox
 - [ ] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [ ] make/unmake

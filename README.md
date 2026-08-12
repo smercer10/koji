@@ -1,5 +1,7 @@
 # koji
 
+[![ci](https://github.com/smercer10/koji/actions/workflows/ci.yml/badge.svg)](https://github.com/smercer10/koji/actions/workflows/ci.yml)
+
 A UCI chess engine written in Zig 0.16, with no external dependencies. Built by a human and Claude
 Code working together.
 
