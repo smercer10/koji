@@ -27,8 +27,9 @@ options. **Met — Phase 0 complete.**
 
 - [x] CI on push and PR: format, `zig build test`, release build, OpenBench `make` contract —
       first, so everything after it is remotely checked
-- [ ] Protection on `main`: require the `ci` check — the part worth having, and there was
-      nothing for a status check to check at Phase 0
+- [x] Protection on `main`: ruleset requiring the `ci` check, linear history, no deletion and
+      no force-push. Repository admin bypasses, so an override is possible but deliberate —
+      and since agent sessions push with that same token, the ruleset stops accidents, not us
 - [ ] Bitboards + mailbox
 - [ ] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [ ] make/unmake
