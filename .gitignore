@@ -25,8 +25,6 @@ nets/*.nnue
 # Self-play training data
 data/
 
-# Vendored docs fallback (only used if a Zig install ever lacks doc/langref.html)
-docs/vendor/
 
 # NOTE: docs/testlog.md is deliberately NOT ignored. It is the project record —
 # the one thing git history cannot reconstruct, because failed branches get

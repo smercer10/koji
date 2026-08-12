@@ -20,8 +20,8 @@ material change to Claude Code itself, since this setup was built against a movi
 2. **Staleness.** `ROADMAP.md` checkboxes against what exists. Claims that stopped being true, and
    claims that became true and should now be added — the give-back link appears when there is
    something to link, not before.
-3. **Gaps.** A rule being followed in practice but written down nowhere, or a decision made ad hoc
-   that belongs in `docs/decisions.md`.
+3. **Gaps.** A rule being followed in practice but written down nowhere, or a decision whose
+   rationale is missing from the comment at the site that enforces it.
 4. **Attribution.** Every `// origin:` comment in the code has a `CREDITS.md` entry, and every entry
    still points at code that exists.
 5. **Duplication.** One rule, one home. A rule with a code site lives as a comment there; a second
@@ -31,7 +31,9 @@ material change to Claude Code itself, since this setup was built against a movi
    lines, split it into `docs/architecture.md`.
 7. **Voice.** Factual, describing what the project does. Flag anything claiming a virtue, assuming
    what a reader wants, arguing a case, or promising something not yet done.
-8. **Setup currency.** Hooks fire — test the failure path, not just the pass. Skills load. Permissions
+8. **Setup currency.** Hooks fire — test the failure path, not just the pass: `bash
+   .claude/hooks/guard_test.sh` covers guard.sh; keep its vectors current when the hook or the
+   rules change. Skills load. Permissions
    match real traffic (`/fewer-permission-prompts`). Deny rules still block what they should. Check
    whether newer Claude Code features have made part of this setup redundant.
 

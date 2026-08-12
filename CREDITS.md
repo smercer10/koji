@@ -37,6 +37,12 @@ Two rules:
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming
 Wiki, papers, release notes, and PR or issue discussion threads — the conversation, not the diff.
 
+This is stricter than the human norm — engine authors read each other's code and say so. The
+difference is that a model reproduces expression far more literally than a person reimplementing
+from memory, so the question is closed by never opening the source. The strength cost is small: the
+techniques are published, and what exists only in source is mostly constants tuned against another
+engine's search tree, which would need retuning here regardless.
+
 Two carve-outs. Shared community tools — `bullet`, `fastchess`, OpenBench, the UCI specification —
 are read and used normally. Discussion threads are primary sources and are used for both concept and
 attribution.
@@ -46,9 +52,10 @@ human, not to fetch the source instead.
 
 This is enforced by the tooling rather than asserted:
 [`.claude/hooks/guard.sh`](.claude/hooks/guard.sh) blocks fetches that resolve to source — raw file
-hosts, GitHub's `/blob/` and `/raw/` views, and a pull request's diff tab — while leaving the
-discussion on that same pull request reachable. The researcher agent
-([`.claude/agents/cpw-researcher.md`](.claude/agents/cpw-researcher.md)) and the allowlist in
+and archive hosts, GitHub's code browser, commit pages, and a pull request's diff in any form —
+while leaving the discussion on that same pull request reachable
+(`.claude/hooks/guard_test.sh` holds the vectors). The researcher agent
+([`.claude/agents/technique-researcher.md`](.claude/agents/technique-researcher.md)) and the allowlist in
 [`.claude/settings.json`](.claude/settings.json) narrow it further.
 
 All of that constrains what the agent reads. It cannot constrain what a model already knows —
@@ -73,5 +80,5 @@ list here — the check is one command and belongs at the moment of use.
 
 ## Naming
 
-If you recognise your code here, or you would rather your engine were not named in this repository
-or used as a testing opponent, open an issue — it gets fixed or removed. No case to argue.
+Takedown requests — naming, attribution, testing opponents — are handled per the note at the end
+of [README.md](README.md): open an issue.

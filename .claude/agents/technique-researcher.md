@@ -1,5 +1,5 @@
 ---
-name: cpw-researcher
+name: technique-researcher
 description: Retrieve a chess-programming technique from published descriptions — Chess Programming Wiki, papers, release notes, PR/issue discussion. Returns the algorithm in implementable detail, its origin attribution, and the licence of any engine mentioned. Use for any technique the main session has not implemented before.
 tools: Read, WebFetch, WebSearch, Grep, Glob
 model: sonnet

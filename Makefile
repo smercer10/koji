@@ -12,10 +12,9 @@ EXE      ?= koji
 ZIG      ?= zig
 OPTIMIZE ?= ReleaseFast
 
-# -Dcpu=native is right for a local build and for an OpenBench worker, which
-# compiles on the machine that will run the games. It must never change the node
-# count: cross-machine bench determinism is what makes SPRT results comparable,
-# so every eval path stays integer (see the Phase 4 note in ROADMAP.md).
+# -Dcpu=native is right here: OpenBench workers compile on the machine that runs
+# the games. It must not change the node count — see the bench invariant in
+# CLAUDE.md.
 CPU ?= native
 
 # EVALFILE is part of the OpenBench contract once a network exists. Phase 4 adds

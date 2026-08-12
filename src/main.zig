@@ -225,7 +225,8 @@ test "perft is well-formed at shallow depths" {
 
 test "deep perft" {
     if (!build_options.slow) return error.SkipZigTest;
-    // Phase 1: depth >= 6 on all standard positions. Lives behind -Dslow so the
-    // fast test step stays under the few seconds that make it worth gating on.
+    // Phase 1: depth >= 6 on all standard positions. Runs only via the
+    // `test-slow` build step, so the fast test step stays under the few
+    // seconds that make it worth gating on.
     try std.testing.expectEqual(@as(u64, 0), perft(6));
 }
