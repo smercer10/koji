@@ -30,7 +30,12 @@ Two rules:
 
 ## Techniques
 
-*Nothing yet — Phase 0 is scaffolding only. Entries land as techniques do.*
+> **bitboards** — origin: *Georgy Adelson-Velsky et al., 1967 (Kaissa); bitset methods in checkers
+> earlier (Strachey 1952, Samuel mid-1950s)* via https://www.chessprogramming.org/Bitboards —
+> trail: *Kaissa and Chess (Northwestern), late 1960s–70s*
+
+> **bitboard+mailbox hybrid** — origin: *unclear (folklore; CPW documents the redundant-mailbox
+> trade-off as common practice)* via https://www.chessprogramming.org/Board_Representation
 
 ## Clean room
 
