@@ -44,7 +44,9 @@ older AMD, so detect it and keep both PEXT and plain magics rather than compilin
 ## Architecture
 - `src/main.zig` — CLI dispatch and the UCI loop. Output *shapes* are contracts: OpenBench parses `<nodes> nodes <nps> nps`; GUIs parse the `uci` block.
 - `build.zig` pins Zig 0.16.0 at comptime and gives every module an explicit `optimize` — a null one silently inherits, which is how you get an unexplained 3x in a bench.
-- Phase 1 splits out `board.zig`, `movegen.zig`; then `search.zig`, `eval.zig`, `tt.zig`, `nnue.zig`.
+- Phase 1 splits out `board.zig`, `move.zig`, `movegen.zig`; then `search.zig`, `eval.zig`, `tt.zig`,
+  `nnue.zig`. Imports stay acyclic in that order — make/unmake lives in `move.zig` as a function over
+  `*Board`, not as a `Board` method, for exactly that reason.
 - Tests sit beside the code they test and **only run if reachable from `main.zig`'s import graph** — a file nothing imports is silently untested.
 - Once those exist: the accumulator stack unwinds exactly with make/unmake; the TT never returns a move illegal in the current position.
 - When this block outgrows ~15 lines, split it into `docs/architecture.md` and leave a pointer.

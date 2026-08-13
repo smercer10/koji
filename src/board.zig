@@ -3,8 +3,9 @@
 //! Hybrid: piece-centric bitboards for the set-wise operations movegen lives on,
 //! plus a square-centric mailbox so "what sits on square x" is one byte load
 //! instead of a probe over six type bitboards. The mailbox is redundant state;
-//! everything that mutates it goes through `put`/`remove`, and `consistent()`
-//! checks the agreement invariant so make/unmake can assert it in debug builds.
+//! everything that mutates it goes through `put`/`remove`/`movePiece`, which
+//! also maintain the Zobrist key, and `consistent()` checks the agreement
+//! invariant that make/unmake asserts on every move in Debug builds.
 //! Whether the redundancy actually pays is a hypothesis until measured — the
 //! ablation is listed under candidate ideas in ROADMAP.md.
 //
@@ -92,6 +93,16 @@ pub const Square = enum(u6) {
         return @enumFromInt((@as(u6, r) << 3) | f);
     }
 
+    /// The inverse of `@tagName`: `"e4"` -> `.e4`, null if that is not the name
+    /// of a square. Both the FEN en passant field and UCI move text are spelled
+    /// this way, so the check lives in one place.
+    pub fn fromName(text: []const u8) ?Square {
+        if (text.len != 2) return null;
+        if (text[0] < 'a' or text[0] > 'h') return null;
+        if (text[1] < '1' or text[1] > '8') return null;
+        return Square.make(@intCast(text[0] - 'a'), @intCast(text[1] - '1'));
+    }
+
     pub fn file(sq: Square) u3 {
         return @truncate(@intFromEnum(sq));
     }
@@ -155,6 +166,45 @@ pub const CastlingRights = packed struct(u4) {
     };
 };
 
+// --- zobrist ----------------------------------------------------------------------
+//
+// origin: Albert Zobrist, "A New Hashing Method with Application for Game Playing",
+//         Tech. Report #88, Computer Sciences Dept., University of Wisconsin-Madison, 1970
+//         via https://www.chessprogramming.org/Zobrist_Hashing
+
+const zobrist_seed: u64 = 0x6b6f_6a69_7a62; // "koji" + zb
+
+const Zobrist = struct {
+    /// Indexed straight by `@intFromEnum(Piece)`. The four unrepresentable codes
+    /// get keys they will never be read with: 12 of 16 rows are live either way,
+    /// so the dead rows cost no cache lines, only address space — and the direct
+    /// index saves unpacking the piece back into color and type.
+    piece: [16][64]u64,
+    /// Applied when black is to move.
+    side: u64,
+    /// Indexed by the packed `CastlingRights`, so a rights change is
+    /// `castling[old] ^ castling[new]` — two loads and no loop.
+    castling: [16]u64,
+    /// By file: the rank of an en passant target follows from the side to move.
+    ep_file: [8]u64,
+};
+
+/// Generated at comptime from a fixed seed, so every build on every machine
+/// agrees — the same requirement, and the same `SplitMix64` idiom, as the magic
+/// search in `attacks.zig`.
+pub const zobrist: Zobrist = blk: {
+    @setEvalBranchQuota(20_000);
+    var rng: std.Random.SplitMix64 = .init(zobrist_seed);
+    var z: Zobrist = undefined;
+    for (&z.piece) |*square_keys| {
+        for (square_keys) |*k| k.* = rng.next();
+    }
+    z.side = rng.next();
+    for (&z.castling) |*k| k.* = rng.next();
+    for (&z.ep_file) |*k| k.* = rng.next();
+    break :blk z;
+};
+
 // --- board -----------------------------------------------------------------------
 
 pub const Board = struct {
@@ -173,6 +223,10 @@ pub const Board = struct {
     /// Halfmoves since the last capture or pawn move (fifty-move rule).
     halfmove: u8 = 0,
     fullmove: u16 = 1,
+    /// Zobrist key of everything above except the clocks — those move every ply
+    /// without changing what the position is worth, and hashing them would give
+    /// the same position a different key at every depth.
+    hash: u64 = 0,
 
     pub const startpos: Board = init: {
         var b: Board = .{ .castling = .all };
@@ -183,6 +237,7 @@ pub const Board = struct {
             b.put(Square.make(f, 6), .b_pawn);
             b.put(Square.make(f, 7), Piece.make(.black, t));
         }
+        b.hash ^= b.hashState();
         break :init b;
     };
 
@@ -205,6 +260,7 @@ pub const Board = struct {
         b.by_type[@intFromEnum(p.pieceType())] |= sq.bit();
         b.by_color[@intFromEnum(p.color())] |= sq.bit();
         b.mailbox[@intFromEnum(sq)] = p;
+        b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(sq)];
     }
 
     /// Clears an occupied square and returns what was on it.
@@ -214,12 +270,51 @@ pub const Board = struct {
         b.by_type[@intFromEnum(p.pieceType())] &= ~sq.bit();
         b.by_color[@intFromEnum(p.color())] &= ~sq.bit();
         b.mailbox[@intFromEnum(sq)] = .none;
+        b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(sq)];
         return p;
+    }
+
+    /// Slides a piece to an empty square: one XOR pair per bitboard rather than
+    /// the AND-NOT and OR that `remove` then `put` would cost.
+    pub fn movePiece(b: *Board, from: Square, to: Square) void {
+        const p = b.mailbox[@intFromEnum(from)];
+        assert(p != .none);
+        assert(b.mailbox[@intFromEnum(to)] == .none);
+        const mask = from.bit() | to.bit();
+        b.by_type[@intFromEnum(p.pieceType())] ^= mask;
+        b.by_color[@intFromEnum(p.color())] ^= mask;
+        b.mailbox[@intFromEnum(from)] = .none;
+        b.mailbox[@intFromEnum(to)] = p;
+        b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(from)] ^
+            zobrist.piece[@intFromEnum(p)][@intFromEnum(to)];
+    }
+
+    /// The non-placement half of the hash: side, castling rights, en passant.
+    /// `put`, `remove` and `movePiece` maintain the placement half as they go,
+    /// so a board assembled by placement alone is missing exactly this much.
+    fn hashState(b: *const Board) u64 {
+        var h = zobrist.castling[@as(u4, @bitCast(b.castling))];
+        if (b.side == .black) h ^= zobrist.side;
+        if (b.ep) |sq| h ^= zobrist.ep_file[sq.file()];
+        return h;
+    }
+
+    /// Rebuilds the hash from scratch. This is the independent readout that
+    /// make/unmake's incrementally maintained `hash` is checked against — the
+    /// same role `sliderAttacksSlow` plays for the magic tables. Nothing on a
+    /// hot path calls it.
+    pub fn computeHash(b: *const Board) u64 {
+        var h = b.hashState();
+        for (b.mailbox, 0..) |p, i| {
+            if (p == .none) continue;
+            h ^= zobrist.piece[@intFromEnum(p)][i];
+        }
+        return h;
     }
 
     /// The representation invariant: the bitboards are exactly what rebuilding
     /// them from the mailbox produces. Implies color/type disjointness. This is
-    /// what make/unmake asserts in debug builds once it exists.
+    /// what make/unmake asserts in Debug builds — O(64), so only there.
     pub fn consistent(b: *const Board) bool {
         var by_type: [6]Bitboard = @splat(0);
         var by_color: [2]Bitboard = @splat(0);
@@ -365,6 +460,9 @@ pub const Board = struct {
             return error.InvalidPlacement;
         }
 
+        // `parsePlacement` hashed the pieces through `put`; the rest of the
+        // record is only known now.
+        b.hash ^= b.hashState();
         return b;
     }
 };
@@ -381,12 +479,12 @@ pub const FenError = error{
 /// Indexed by `PieceType`; lowercased for black. The one place the letters live.
 const piece_chars = "PNBRQK";
 
-fn pieceChar(p: Piece) u8 {
+pub fn pieceChar(p: Piece) u8 {
     const upper = piece_chars[@intFromEnum(p.pieceType())];
     return if (p.color() == .black) std.ascii.toLower(upper) else upper;
 }
 
-fn pieceFromChar(ch: u8) ?Piece {
+pub fn pieceFromChar(ch: u8) ?Piece {
     const idx = std.mem.indexOfScalar(u8, piece_chars, std.ascii.toUpper(ch)) orelse return null;
     return Piece.make(if (std.ascii.isLower(ch)) .black else .white, @enumFromInt(idx));
 }
@@ -457,17 +555,13 @@ fn parseCastling(b: *Board, field: []const u8) FenError!void {
 
 fn parseEnPassant(b: *Board, field: []const u8) FenError!void {
     if (isByte(field, '-')) return;
-    if (field.len != 2) return error.InvalidEnPassant;
-    const f = field[0];
-    const r = field[1];
-    if (f < 'a' or f > 'h' or r < '1' or r > '8') return error.InvalidEnPassant;
+    const sq = Square.fromName(field) orelse return error.InvalidEnPassant;
 
     // The target is the square a double-pushed pawn skipped, so its rank is
     // fixed by whose turn it now is: white to move means black just pushed
     // (rank 6), black to move means white did (rank 3). FEN sets this whether
     // or not the capture is actually available, so it is not a legality check —
     // a square on any other rank is a malformed record.
-    const sq = Square.make(@intCast(f - 'a'), @intCast(r - '1'));
     if (sq.rank() != @as(u3, if (b.side == .white) 5 else 2)) return error.InvalidEnPassant;
     b.ep = sq;
 }
@@ -582,6 +676,75 @@ test "put and remove keep the representation consistent" {
     // A deliberately desynced board must fail the invariant.
     b.by_color[0] ^= Square.a3.bit();
     try expect(!b.consistent());
+}
+
+test "movePiece slides a piece without disturbing anything else" {
+    var b = Board.startpos;
+    var expected = Board.startpos;
+
+    b.movePiece(.b1, .c3);
+    _ = expected.remove(.b1);
+    expected.put(.c3, .w_knight);
+
+    try expect(b.consistent());
+    try expect(std.meta.eql(expected, b));
+}
+
+test "zobrist keys are distinct and non-zero" {
+    // A duplicate key is silent: two different positions share a hash and the
+    // transposition table starts returning another position's move. This is the
+    // one place it is cheap to rule out.
+    var keys: [16 * 64 + 1 + 16 + 8]u64 = undefined;
+    var n: usize = 0;
+    for (zobrist.piece) |square_keys| {
+        for (square_keys) |k| {
+            keys[n] = k;
+            n += 1;
+        }
+    }
+    keys[n] = zobrist.side;
+    n += 1;
+    for (zobrist.castling ++ zobrist.ep_file) |k| {
+        keys[n] = k;
+        n += 1;
+    }
+    try expectEqual(keys.len, n);
+
+    std.mem.sort(u64, &keys, {}, std.sort.asc(u64));
+    for (keys, 0..) |k, i| {
+        try expect(k != 0);
+        if (i > 0) try expect(k != keys[i - 1]);
+    }
+}
+
+test "the placement primitives maintain the hash" {
+    var b = Board.startpos;
+    try expectEqual(b.computeHash(), b.hash);
+
+    const p = b.remove(.e2);
+    try expectEqual(b.computeHash(), b.hash);
+    b.put(.e4, p);
+    try expectEqual(b.computeHash(), b.hash);
+    b.movePiece(.e4, .e5);
+    try expectEqual(b.computeHash(), b.hash);
+
+    // Placement is only half of it: the state terms have to move the key too,
+    // or every position would collide with its own mirror image.
+    var same_placement = b;
+    same_placement.side = .black;
+    try expect(same_placement.computeHash() != b.computeHash());
+    same_placement = b;
+    same_placement.castling = .{};
+    try expect(same_placement.computeHash() != b.computeHash());
+    same_placement = b;
+    same_placement.ep = .e6;
+    try expect(same_placement.computeHash() != b.computeHash());
+
+    // Clocks deliberately do not.
+    same_placement = b;
+    same_placement.halfmove +%= 1;
+    same_placement.fullmove += 1;
+    try expectEqual(b.computeHash(), same_placement.computeHash());
 }
 
 // --- FEN tests ---------------------------------------------------------------

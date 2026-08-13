@@ -67,6 +67,24 @@ Two rules:
 > `;D<n> <nodes>` perft-suite convention in `testdata/perft.epd` is *not* part of that standard —
 > origin: *unclear (community convention)*
 
+> **16-bit from-to-plus-flags move encoding** — origin: *unclear (folklore; CPW documents the scheme
+> and its four-bit flag table without attributing either)* via
+> https://www.chessprogramming.org/Encoding_Moves
+
+> **make/unmake with an undo record** — origin: *unclear (folklore; CPW describes the stack, the
+> per-ply array and the move-carried variants and attributes none of them)* via
+> https://www.chessprogramming.org/Unmake_Move
+
+> **castling-rights update by per-square mask** — origin: *unclear (folklore; CPW's Castling Rights
+> page states which moves clear which rights, not this way of applying it)* via
+> https://www.chessprogramming.org/Castling_Rights
+
+> **Zobrist hashing** — origin: *Albert Zobrist, "A New Hashing Method with Application for Game
+> Playing", Technical Report #88, Computer Sciences Department, University of Wisconsin-Madison,
+> 1970* via https://www.chessprogramming.org/Zobrist_Hashing — trail: *universal in game-tree search
+> since; the 16-way castling and per-file en passant key layout is the standard one described there.
+> koji's keys are its own, generated at comptime from a fixed seed*
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming

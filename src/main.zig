@@ -183,6 +183,7 @@ test {
     // Pulls the engine modules into the test graph: a file whose tests nothing
     // references is silently untested (CLAUDE.md).
     _ = @import("board.zig");
+    _ = @import("move.zig");
     _ = @import("attacks.zig");
 }
 
