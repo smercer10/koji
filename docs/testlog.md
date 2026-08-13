@@ -67,3 +67,69 @@ comparison is not evidence and should not be logged as one.
             Startup A/B (`koji version`, 200 runs, ~1.1ms process baseline): init = table fill
             only, ~0.40ms on both schemes. `zig build test` warm: 215ms including regenerating
             all 128 magics in ReleaseSafe.
+
+### 2026-08-13 — Legal movegen: the Phase 1 perft NPS baseline
+- branch:   feat/movegen
+- type:     perft (correctness) + bench (the never-regress speed baseline)
+- result:   PASS — all 35 perft checks in `testdata/perft.epd` exact, 16,270,939,707 nodes
+- bench:    0 (stub — no search exists yet)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    **There is no "before" here.** This is the first movegen, so the numbers below are a
+            baseline to defend, not a comparison, and nothing in this entry claims a speedup.
+
+            Correctness. `koji epd testdata/perft.epd` reproduces every listed count to depth 6
+            (Kiwipete D6 = 8,031,647,685; position 6 D6 = 6,923,051,137) in 71s; `zig build
+            test-slow` does the same in ReleaseSafe in 1m34s. Two oracles beyond the node counts:
+            a `generateSlow` in movegen.zig that generates every legal *shape* and keeps a move
+            only if playing it leaves the king unattacked — sharing nothing with the fast path but
+            `sliderAttacksSlow` — checked against `generate` at every node of a depth-2 walk from
+            each perft position plus 8 seeded 48-ply random walks from each, and hand-written full
+            move lists for the cases perft would only report as a wrong number several plies deep.
+
+            Speed, `koji perft` timing itself (15 runs each, no CPU governor control available
+            under WSL2, so the spread below includes whatever the host was doing):
+
+              startpos D6  (119,060,324 nodes)  mean 170.0 Mnps  median 169.6  sd 2.17 (1.28%)
+              Kiwipete D5  (193,690,690 nodes)  mean 249.1 Mnps  median 248.7  sd 6.08 (2.44%)
+
+            Both counts use bulk counting (depth 1 returns the move count instead of playing each
+            move to count 1), which is standard and changes no node count.
+
+            `perf stat -r 5`, normalised per `generate()` call — that is per *interior* node, which
+            is what perft's leaf count is not: 5,072,213 calls for startpos D6, 4,185,553 for
+            Kiwipete D5.
+
+                                    startpos D6      Kiwipete D5
+              branching factor        23.5             46.3
+              cycles / call            631              842
+              instructions / call     1862             2244
+              IPC                      2.95             2.66
+              branch miss rate         0.89%            1.32%
+              cache misses / call      0.102            0.146
+
+            **Startpos is the slower position per node, and the counters say why.** Kiwipete emits
+            2.0x the moves per call for 1.2x the instructions. Fitting the two points as
+            `instructions = fixed + per_move x branching` gives roughly 1,470 fixed and 17 per
+            generated move — so at startpos's branching factor about 79% of the work is fixed cost
+            paid before a single move is built: the king danger sweep over the whole enemy army,
+            `attackersTo` for the checkers, and the sniper loop. Two points fit a line exactly, so
+            treat those constants as an estimate, not a measurement — but the direction is not in
+            doubt, and it says any future work on this number belongs in the per-node preamble and
+            not in the serialisation loops.
+
+            Cache misses are 0.1–0.15 per call against a 64KB `between` + `line` footprint, which
+            is already a partial answer to the ablation filed under ROADMAP's candidate ideas:
+            those tables are not currently costing anything in misses, so dropping them would have
+            to pay for itself in some other way.
+
+            Assembly checked rather than assumed. `between` and `line` are 0x8000 bytes each in
+            `.rodata`, and the knight, king and pawn tables are present as contiguous constant
+            blobs — recomputed independently in Python and found byte-for-byte in the binary, so
+            no comptime table is being rebuilt at runtime. Everything inlines into one 5,981-byte
+            `movegen.generate`: 20 `pext` (PEXT path live), 38 `tzcnt` + 34 `blsr` (the popLsb
+            serialisation loops), 52 `bt` (the per-move pin tests, one instruction each), 2
+            `popcnt` (the double-check test, once per colour specialisation).
+
+            No CPU governor control exists under WSL2, so the wall-clock spread above is a floor
+            on what a future A/B can resolve here; the cycle counts are far steadier (+/-0.34% on
+            startpos) and are the better instrument for small effects.

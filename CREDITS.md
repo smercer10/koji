@@ -85,6 +85,55 @@ Two rules:
 > since; the 16-way castling and per-file en passant key layout is the standard one described there.
 > koji's keys are its own, generated at comptime from a fixed seed*
 
+> **knight and king attack tables** — origin: *unclear (folklore; CPW presents both patterns as
+> plain per-square lookups and attributes neither)* via
+> https://www.chessprogramming.org/Knight_Pattern
+
+> **set-wise pawn pushes and attacks by parallel shift** — origin: *unclear (folklore; both CPW pages
+> are community-authored and credit no inventor)* via
+> https://www.chessprogramming.org/Pawn_Pushes_(Bitboards)
+
+> **64x64 in-between table** — origin: *unclear (folklore; CPW documents the two-dimensional
+> `arrRectangular` lookup as "the common approach" and names nobody)* via
+> https://www.chessprogramming.org/Square_Attacked_By — koji's companion full-line table has no CPW
+> page at all; it follows directly from the empty-board attack sets it is built from
+> (https://www.chessprogramming.org/On_an_empty_Board)
+
+> **legal move generation from checker, evasion and pin masks** — origin: *unclear (folklore;
+> converged on independently, and CPW's own description of the "strictly legal" family names no
+> inventor and declares no winner against the pseudo-legal-plus-filter family)* via
+> https://www.chessprogramming.org/Legal_Move — trail: *the clearest published write-up of this exact
+> shape is Peter Ellis Jones, "Generating Legal Chess Moves Efficiently",
+> https://peterellisjones.com/posts/generating-legal-chess-moves-efficiently/, which claims no
+> invention either*
+
+> **king danger squares by removing the king from the occupancy** — origin: *unclear (folklore; no
+> CPW page states the removal rule and no published source found claims it)* via
+> https://www.chessprogramming.org/Square_Attacked_By
+
+> **absolute pins by x-ray sniper plus a single in-between blocker** — origin: *unclear (folklore;
+> CPW describes the equivalent x-ray method and credits no inventor)* via
+> https://www.chessprogramming.org/Checks_and_Pinned_Pieces_(Bitboards) — a self-reported invention
+> claim for this exists on TalkChess, but it names an unlicensed engine and so is not citable here
+> under the licence rule below
+
+> **the horizontal en passant pin** — origin: *unclear (folklore; CPW states the extra test is
+> required for strict legality and names no discoverer)* via
+> https://www.chessprogramming.org/En_passant — trail: *independently rediscovered as a real bug and
+> fixed in python-chess (GPL-3.0) v0.13.3*
+
+> **perft** — origin: *disputed. CPW records R.C. Smith's COBOL RSCE-1 (c. 1978) as the supposed
+> first implementation, and Robert Hyatt's own claim to have used the technique in the 1980s; the
+> term itself is likely a Crafty command name* via https://www.chessprogramming.org/Perft — trail:
+> *the modern move-path-enumeration formulation and the reference node counts are Steven Edwards',
+> 1995. **divide** is presented there as standard debugging practice with no attributed author.
+> Position 2 of the standard suite is credited to Peter McKenzie, position 6 to Steven Edwards*
+
+> **218 as the maximum number of legal moves** — origin: *a 1964 Nenad Petrović composition, reported
+> by Andrew Shapira on CCC in 2005; proved an upper bound by Tobs40, 2024* via
+> https://www.chessprogramming.org/Chess_Position — koji's move list is sized 256, the next power of
+> two above it
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming

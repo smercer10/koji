@@ -37,8 +37,11 @@ options. **Met — Phase 0 complete.**
       no consumer is untestable, and before a transposition table exists Zobrist's only consumer is
       make/unmake: splitting it out would mean a branch whose entire test surface is the previous
       branch's code, plus a second pass threading xors back through every arm of make/unmake
-- [ ] Legal move generation: leapers, pawns, castling, check and pin legality
-- [ ] `perft` driver and `divide`, run over `testdata/perft.epd` from `test` and `test-slow`
+- [x] Legal move generation — leapers, pawns, castling, check and pin legality — with the `perft`
+      driver and `divide`, run over `testdata/perft.epd` from `test` and `test-slow`. One item,
+      because perft is movegen's only real test: the workflow says write that test first, so
+      splitting them would have meant merging a generator nothing checked, then debugging the
+      divergence it caused without the `divide` built to localise it
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
       `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,
@@ -143,6 +146,24 @@ commitment to implement it.
 - Mailbox ablation: drop `Board.mailbox` and probe the type bitboards in `make()` instead;
   `/bench` perft NPS both ways. The hybrid is CPW consensus, not a measurement — all mailbox
   access goes through `put`/`remove`/`movePiece`/`pieceAt`, so the experiment is contained.
+- Attack the per-node fixed cost in `movegen.zig`, which the Phase 1 baseline measured at roughly
+  1,470 of the ~1,860 instructions a `generate()` call spends at the start position — the king
+  danger sweep recomputes the entire enemy army's attack set every node, before a single move is
+  built. Options: skip the sweep when the king has no legal destination anyway, compute danger
+  lazily per candidate king square (≤8 squares, and most nodes need none of them), or cache the
+  sweep across the sibling moves of a node. This is the single largest lever on perft NPS that the
+  counters point at, and none of it is worth doing before there is a search to measure it against.
+- Drop the 32KB `line` table from `attacks.zig` and confine a pinned piece some other way, or drop
+  the 32KB `between` table and derive the check-evasion mask from two magic lookups instead. Both
+  are read only through the king's row, so 64KB of tables serve one row each per node. The Phase 1
+  baseline measured 0.1–0.15 cache misses per `generate()` call, so they are *not* currently costing
+  misses and this now looks unpromising — recorded because the reasoning that motivated it was
+  wrong, not because the idea is good. CPW's only data point is a single unverified forum anecdote
+  about a closed engine, which is not evidence either.
+- Split the pawn loop in `movegen.zig` by pin: pinned pawns are rare, so the per-move pin test in
+  `addPawnMoves` is a branch almost always taken the same way. Generating `pawns & ~pinned` set-wise
+  with no test at all, and looping over the few pinned ones separately, trades a branch for
+  duplicated pawn logic — only worth it if it measures.
 - Set the en passant square only when an enemy pawn can actually capture it. koji follows standard
   FEN and sets it after every double push, which gives two otherwise identical positions different
   Zobrist keys and splits their transposition table entries. Node counts are unaffected either way,

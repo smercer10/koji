@@ -12,6 +12,9 @@ const std = @import("std");
 const build_options = @import("build_options");
 const Io = std.Io;
 const attacks = @import("attacks.zig");
+const board = @import("board.zig");
+const Board = board.Board;
+const perft_mod = @import("perft.zig");
 
 /// Bumped per release; reported by `uci` and `--version`.
 const version = "0.0.0";
@@ -40,9 +43,11 @@ pub fn main(init: std.process.Init) !void {
     } else if (eql(command, "bench")) {
         try bench(out);
     } else if (eql(command, "perft")) {
-        try perftCommand(out, rest);
+        try perftCommand(io, arena, out, rest, .total);
+    } else if (eql(command, "divide")) {
+        try perftCommand(io, arena, out, rest, .divide);
     } else if (eql(command, "epd")) {
-        try epdCommand(out, rest);
+        try epdCommand(io, arena, out, rest);
     } else if (eql(command, "--version") or eql(command, "version")) {
         try out.print("koji {s}\n", .{version});
     } else if (eql(command, "--help") or eql(command, "help")) {
@@ -59,11 +64,12 @@ fn usage(out: *Io.Writer) Io.Writer.Error!void {
     try out.writeAll(
         \\usage: koji <command>
         \\
-        \\  uci             speak UCI on stdin/stdout (default)
-        \\  bench           fixed benchmark; prints "<nodes> nodes <nps> nps"
-        \\  perft <depth>   node count from the start position
-        \\  epd <file>      run an EPD suite
-        \\  version         print the version
+        \\  uci                    speak UCI on stdin/stdout (default)
+        \\  bench                  fixed benchmark; prints "<nodes> nodes <nps> nps"
+        \\  perft <depth> [fen]    node count; start position unless a FEN is given
+        \\  divide <depth> [fen]   perft split by root move
+        \\  epd <file>             run a perft suite in EPD form
+        \\  version                print the version
         \\
     );
 }
@@ -82,36 +88,88 @@ fn bench(out: *Io.Writer) Io.Writer.Error!void {
 
 // --- perft -------------------------------------------------------------------
 
-fn perftCommand(out: *Io.Writer, args: []const []const u8) !void {
+const PerftMode = enum { total, divide };
+
+/// `perft <depth> [fen]` and `divide <depth> [fen]` differ only in what they
+/// print, so they share a parser. The FEN is taken as the remaining arguments
+/// joined by spaces, which is what a shell hands over for an unquoted one.
+fn perftCommand(
+    io: Io,
+    arena: std.mem.Allocator,
+    out: *Io.Writer,
+    args: []const []const u8,
+    mode: PerftMode,
+) !void {
+    const name = if (mode == .total) "perft" else "divide";
     if (args.len < 1) {
-        try out.writeAll("usage: koji perft <depth>\n");
+        try out.print("usage: koji {s} <depth> [fen]\n", .{name});
         try out.flush();
         return error.MissingArgument;
     }
     const depth = std.fmt.parseInt(u8, args[0], 10) catch {
-        try out.print("perft: invalid depth: {s}\n", .{args[0]});
+        try out.print("{s}: invalid depth: {s}\n", .{ name, args[0] });
         try out.flush();
         return error.InvalidArgument;
     };
-    try out.print("{d} nodes\n", .{perft(depth)});
-}
 
-/// Phase 1 replaces this with real make/unmake move generation. The signature is
-/// the contract: a node count for a depth, nothing else.
-fn perft(depth: u8) u64 {
-    _ = depth;
-    return 0;
+    var b = Board.startpos;
+    if (args.len > 1) {
+        const fen = try std.mem.join(arena, " ", args[1..]);
+        b = Board.fromFen(fen) catch |err| {
+            try out.print("{s}: invalid FEN: {s}\n", .{ name, @errorName(err) });
+            try out.flush();
+            return error.InvalidArgument;
+        };
+    }
+
+    switch (mode) {
+        .total => {
+            // Timed and reported in the same shape as `bench`, because Phase 1's
+            // exit criterion is a perft NPS baseline that later work may not
+            // regress — and a baseline the binary reports itself is one nobody
+            // has to reproduce a shell pipeline to re-measure.
+            const start = Io.Clock.awake.now(io);
+            const nodes = perft_mod.perft(&b, depth);
+            const ns = start.durationTo(Io.Clock.awake.now(io)).nanoseconds;
+            const nps: u64 = if (ns > 0)
+                @intCast(@divTrunc(@as(i96, nodes) * std.time.ns_per_s, ns))
+            else
+                0;
+            try out.print("{d} nodes {d} nps\n", .{ nodes, nps });
+        },
+        .divide => _ = try perft_mod.divide(&b, depth, out),
+    }
 }
 
 // --- epd ---------------------------------------------------------------------
 
-fn epdCommand(out: *Io.Writer, args: []const []const u8) !void {
+/// Runs a perft suite in EPD form: every `;D<n> <nodes>` operation in the file is
+/// checked, and a single failure fails the command. No node budget here — the
+/// point of running it by hand is to run all of it.
+fn epdCommand(io: Io, arena: std.mem.Allocator, out: *Io.Writer, args: []const []const u8) !void {
     if (args.len < 1) {
         try out.writeAll("usage: koji epd <file>\n");
         try out.flush();
         return error.MissingArgument;
     }
-    try out.print("epd: not implemented ({s}: 0/0)\n", .{args[0]});
+
+    const text = Io.Dir.cwd().readFileAlloc(io, args[0], arena, .limited(16 << 20)) catch |err| {
+        try out.print("epd: cannot read {s}: {s}\n", .{ args[0], @errorName(err) });
+        try out.flush();
+        return error.InvalidArgument;
+    };
+
+    const result = perft_mod.runSuite(text, std.math.maxInt(u64), out) catch |err| {
+        try out.print("epd: {s}\n", .{@errorName(err)});
+        try out.flush();
+        return error.InvalidArgument;
+    };
+    try out.print(
+        "\n{d} positions, {d} checks, {d} failed, {d} nodes\n",
+        .{ result.positions, result.ran, result.failed, result.nodes },
+    );
+    try out.flush();
+    if (result.failed != 0) return error.PerftMismatch;
 }
 
 // --- uci ---------------------------------------------------------------------
@@ -185,6 +243,8 @@ test {
     _ = @import("board.zig");
     _ = @import("move.zig");
     _ = @import("attacks.zig");
+    _ = @import("movegen.zig");
+    _ = @import("perft.zig");
 }
 
 test "bench output matches the OpenBench contract" {
@@ -230,16 +290,5 @@ test "a release build advertises no tuning options" {
     }
 }
 
-test "perft is well-formed at shallow depths" {
-    // Phase 1 replaces this with the real start-position node counts
-    // (20, 400, 8902, 197281, 4865609, 119060324).
-    try std.testing.expectEqual(@as(u64, 0), perft(1));
-}
-
-test "deep perft" {
-    if (!build_options.slow) return error.SkipZigTest;
-    // Phase 1: depth >= 6 on all standard positions. Runs only via the
-    // `test-slow` build step, so the fast test step stays under the few
-    // seconds that make it worth gating on.
-    try std.testing.expectEqual(@as(u64, 0), perft(6));
-}
+// The perft tests, shallow and deep, live in `perft.zig` beside the driver they
+// exercise; `zig build test-slow` still reaches them through the import above.

@@ -448,16 +448,35 @@ pub const Board = struct {
             }
         }
 
-        // Two checks past syntax, because movegen's preconditions are not
+        // Three checks past syntax, because movegen's preconditions are not
         // recoverable further in: it takes `lsb(pieces(c, .king))`, which
         // asserts a non-empty board — and asserts vanish in ReleaseFast. A pawn
         // on the back rank is the same kind of trap: no move out of it is
-        // representable. Both are cheap here and unfixable at depth 20.
+        // representable. All three are cheap here and unfixable at depth 20.
         for ([_]Color{ .white, .black }) |c| {
             if (@popCount(b.pieces(c, .king)) != 1) return error.InvalidPlacement;
         }
         if (b.by_type[@intFromEnum(PieceType.pawn)] & (rankMask(0) | rankMask(7)) != 0) {
             return error.InvalidPlacement;
+        }
+
+        // The third: movegen trusts a castling right to mean the king and rook
+        // are still home, because `makeMove`'s rights mask guarantees it for
+        // every position koji reaches itself. A hand-written record can still
+        // claim a right no placement backs, and the castle generated from it
+        // would move a rook that is not there. Rejected rather than quietly
+        // cleared — a position silently different from the record it was read
+        // from is worse than a complaint.
+        const Backing = struct { held: bool, color: Color, king: Square, rook: Square };
+        for ([_]Backing{
+            .{ .held = b.castling.white_kingside, .color = .white, .king = .e1, .rook = .h1 },
+            .{ .held = b.castling.white_queenside, .color = .white, .king = .e1, .rook = .a1 },
+            .{ .held = b.castling.black_kingside, .color = .black, .king = .e8, .rook = .h8 },
+            .{ .held = b.castling.black_queenside, .color = .black, .king = .e8, .rook = .a8 },
+        }) |r| {
+            if (!r.held) continue;
+            if (b.pieceAt(r.king) != Piece.make(r.color, .king)) return error.InvalidCastling;
+            if (b.pieceAt(r.rook) != Piece.make(r.color, .rook)) return error.InvalidCastling;
         }
 
         // `parsePlacement` hashed the pieces through `put`; the rest of the
@@ -853,6 +872,12 @@ test "malformed FEN is rejected with a specific error" {
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1", error.InvalidCastling },
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1", error.InvalidCastling },
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KK - 0 1", error.InvalidCastling },
+        // Rights no placement backs: no rook on the corner, or no king at home.
+        .{ "4k3/8/8/8/8/8/8/4K3 w K - 0 1", error.InvalidCastling },
+        .{ "4k3/8/8/8/8/8/8/R3K3 w K - 0 1", error.InvalidCastling },
+        .{ "4k3/8/8/8/8/8/8/R2K3R w Q - 0 1", error.InvalidCastling },
+        .{ "r3k3/8/8/8/8/8/8/4K3 w k - 0 1", error.InvalidCastling },
+        .{ "4k2r/8/8/8/8/8/8/4K3 w q - 0 1", error.InvalidCastling },
         // En passant, including a square on the wrong rank for the side to move.
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1", error.InvalidEnPassant },
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq z6 0 1", error.InvalidEnPassant },
