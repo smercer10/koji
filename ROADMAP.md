@@ -37,8 +37,8 @@ options. **Met — Phase 0 complete.**
       no consumer is untestable, and before a transposition table exists Zobrist's only consumer is
       make/unmake: splitting it out would mean a branch whose entire test surface is the previous
       branch's code, plus a second pass threading xors back through every arm of make/unmake
-- [ ] Legal move generation: leapers, pawns, castling, check and pin legality
-- [ ] `perft` driver and `divide`, run over `testdata/perft.epd` from `test` and `test-slow`
+- [x] Legal move generation: leapers, pawns, castling, check and pin legality, with the `perft`
+      driver and `divide` run over `testdata/perft.epd` from `test` and `test-slow`
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
       `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,
@@ -143,6 +143,16 @@ commitment to implement it.
 - Mailbox ablation: drop `Board.mailbox` and probe the type bitboards in `make()` instead;
   `/bench` perft NPS both ways. The hybrid is CPW consensus, not a measurement — all mailbox
   access goes through `put`/`remove`/`movePiece`/`pieceAt`, so the experiment is contained.
+- Attack the per-node fixed cost in `movegen.zig` — the largest lever the counters point at, ~79% of
+  a `generate()` call at the start position (testlog, 2026-08-13), mostly the king danger sweep over
+  the whole enemy army. Skip the sweep when the king has no destination anyway, compute danger
+  lazily per candidate king square, or reuse it across a node's siblings.
+- Drop the 32KB `line` or `between` table from `attacks.zig` and recompute what they serve. Measured
+  unpromising already: ~0.1 cache misses per `generate()` call, so 64KB of tables are costing
+  nothing to hold. Needs a new argument, not a repeat of this one.
+- Split the pawn loop in `movegen.zig` by pin, so `pawns & ~pinned` generates set-wise with no
+  per-move pin test and the rare pinned ones are handled separately. Trades a well-predicted branch
+  for duplicated pawn logic.
 - Set the en passant square only when an enemy pawn can actually capture it. koji follows standard
   FEN and sets it after every double push, which gives two otherwise identical positions different
   Zobrist keys and splits their transposition table entries. Node counts are unaffected either way,

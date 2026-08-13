@@ -1,5 +1,9 @@
-//! koji — sliding-piece attacks: the rook/bishop attack set for any blocker
-//! occupancy, one table lookup each.
+//! koji — attack sets and board geometry.
+//!
+//! Three groups, in the order they appear: leaper attacks and the square-pair
+//! geometry movegen reasons about (both occupancy-independent, so both are plain
+//! comptime tables), then the sliding-piece attacks that are the file's bulk —
+//! the rook/bishop attack set for any blocker occupancy, one table lookup each.
 //!
 //! Both index schemes share the masks, the tables and the fill code; only the
 //! occupancy→index step differs:
@@ -26,7 +30,141 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const board = @import("board.zig");
 const Bitboard = board.Bitboard;
+const Color = board.Color;
 const Square = board.Square;
+
+// --- leapers -----------------------------------------------------------------------
+//
+// Nothing here depends on occupancy, so each is a straight comptime table built
+// from the masked directional shifts in `board.zig` — the masking is what keeps a
+// knight on the h-file off the a-file.
+//
+// origin: knight and king attack lookup tables — unclear (folklore; CPW presents
+//         both patterns with no attributed author)
+//         via https://www.chessprogramming.org/Knight_Pattern
+// origin: set-wise pawn attacks by parallel shift — unclear (folklore; CPW's page
+//         is community-authored, crediting no inventor)
+//         via https://www.chessprogramming.org/Pawn_Attacks_(Bitboards)
+
+pub const knight_attacks: [64]Bitboard = blk: {
+    @setEvalBranchQuota(10_000);
+    var t: [64]Bitboard = @splat(0);
+    for (&t, 0..) |*a, i| {
+        const b = squareBit(i);
+        // Two of one direction then one of the other, eight ways. Each shift
+        // masks its own wrapping file, so composing them cannot teleport.
+        a.* = board.north(board.north(board.east(b))) | board.north(board.north(board.west(b))) |
+            board.south(board.south(board.east(b))) | board.south(board.south(board.west(b))) |
+            board.east(board.east(board.north(b))) | board.east(board.east(board.south(b))) |
+            board.west(board.west(board.north(b))) | board.west(board.west(board.south(b)));
+    }
+    break :blk t;
+};
+
+pub const king_attacks: [64]Bitboard = blk: {
+    @setEvalBranchQuota(10_000);
+    var t: [64]Bitboard = @splat(0);
+    for (&t, 0..) |*a, i| {
+        const b = squareBit(i);
+        a.* = board.north(b) | board.south(b) | board.east(b) | board.west(b) |
+            board.northEast(b) | board.northWest(b) | board.southEast(b) | board.southWest(b);
+    }
+    break :blk t;
+};
+
+/// Squares a pawn of the given color attacks from each square. Indexed by
+/// `@intFromEnum(Color)`.
+pub const pawn_attacks: [2][64]Bitboard = blk: {
+    var t: [2][64]Bitboard = @splat(@splat(0));
+    for (0..64) |i| {
+        const b = squareBit(i);
+        t[@intFromEnum(Color.white)][i] = board.northEast(b) | board.northWest(b);
+        t[@intFromEnum(Color.black)][i] = board.southEast(b) | board.southWest(b);
+    }
+    break :blk t;
+};
+
+/// `Square.bit` by index, for the table builders that already loop over `0..64`
+/// and would otherwise pay an enum bounds check per square at comptime.
+fn squareBit(i: usize) Bitboard {
+    return @as(Bitboard, 1) << @intCast(i);
+}
+
+/// Every square attacked by a whole set of pawns at once — one pair of shifts
+/// instead of a loop over the set, which is what movegen wants for the king
+/// danger sweep.
+pub fn pawnAttacksSet(comptime c: Color, pawns: Bitboard) Bitboard {
+    return if (c == .white)
+        board.northEast(pawns) | board.northWest(pawns)
+    else
+        board.southEast(pawns) | board.southWest(pawns);
+}
+
+// --- square-pair geometry ----------------------------------------------------------
+//
+// origin: 64x64 in-between table — unclear (folklore; CPW documents the
+//         "arrRectangular" two-dimensional lookup as the common approach and
+//         credits no inventor)
+//         via https://www.chessprogramming.org/Square_Attacked_By
+// origin: the full-line companion table — unclear; CPW has no page for it, and it
+//         follows directly from the empty-board attack sets it is built from
+//         via https://www.chessprogramming.org/On_an_empty_Board
+
+/// Squares strictly between two aligned squares, and empty for any pair that is
+/// not on a shared rank, file or diagonal — including a square with itself. Under
+/// single check, `between[ksq][checker] | checker.bit()` is exactly the set an
+/// evasion may land on: block anywhere along the ray, or take the checker. A
+/// knight or pawn checker is never aligned with the king, so the empty result
+/// leaves capture as the only option with no branch needed.
+pub const between: [64][64]Bitboard = blk: {
+    @setEvalBranchQuota(50_000);
+    var t: [64][64]Bitboard = @splat(@splat(0));
+    for (0..64) |i| {
+        for (.{ Slider.bishop, Slider.rook }) |s| {
+            for (shiftFns(s)) |shift| {
+                // Walk outward, remembering the squares already stepped over:
+                // that trail *is* the in-between set for wherever we land next.
+                var trail: Bitboard = 0;
+                var b = shift(squareBit(i));
+                while (b != 0) : (b = shift(b)) {
+                    t[i][@ctz(b)] = trail;
+                    trail |= b;
+                }
+            }
+        }
+    }
+    break :blk t;
+};
+
+/// The whole rank, file or diagonal through two aligned squares, edge to edge and
+/// including both; empty when they are not aligned. `line[ksq][sq]` is precisely
+/// where a piece pinned against the king on `ksq` is still allowed to go — it may
+/// shuffle along the pin and it may capture the pinner, so a pin restricts a piece
+/// rather than freezing it.
+pub const line: [64][64]Bitboard = blk: {
+    @setEvalBranchQuota(50_000);
+    var t: [64][64]Bitboard = @splat(@splat(0));
+    for (0..64) |i| {
+        // Opposite directions form one line, so they are accumulated together.
+        for (.{
+            .{ &board.north, &board.south },
+            .{ &board.east, &board.west },
+            .{ &board.northEast, &board.southWest },
+            .{ &board.northWest, &board.southEast },
+        }) |axis| {
+            var whole: Bitboard = squareBit(i);
+            for (axis) |shift| {
+                var b = shift(squareBit(i));
+                while (b != 0) : (b = shift(b)) whole |= b;
+            }
+            var rest = whole & ~squareBit(i);
+            while (rest != 0) : (rest &= rest - 1) t[i][@ctz(rest)] = whole;
+        }
+    }
+    break :blk t;
+};
+
+// --- sliders -----------------------------------------------------------------------
 
 pub const Scheme = enum { pext, magic };
 pub const Slider = enum(u1) { bishop, rook };
@@ -348,6 +486,117 @@ pub fn init() void {
 
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
+
+test "leapers reach the right squares and never wrap the board edge" {
+    // Centre squares have the full pattern; corners have the fraction that fits.
+    try expectEqual(@as(u7, 8), @popCount(knight_attacks[@intFromEnum(Square.e4)]));
+    try expectEqual(@as(u7, 2), @popCount(knight_attacks[@intFromEnum(Square.a1)]));
+    try expectEqual(@as(u7, 3), @popCount(knight_attacks[@intFromEnum(Square.b1)]));
+    try expectEqual(@as(u7, 4), @popCount(knight_attacks[@intFromEnum(Square.b2)]));
+    try expectEqual(@as(u7, 8), @popCount(king_attacks[@intFromEnum(Square.e4)]));
+    try expectEqual(@as(u7, 3), @popCount(king_attacks[@intFromEnum(Square.a1)]));
+    try expectEqual(@as(u7, 5), @popCount(king_attacks[@intFromEnum(Square.a4)]));
+
+    try expectEqual(
+        Square.d2.bit() | Square.f2.bit() | Square.c3.bit() | Square.g3.bit() |
+            Square.c5.bit() | Square.g5.bit() | Square.d6.bit() | Square.f6.bit(),
+        knight_attacks[@intFromEnum(Square.e4)],
+    );
+    try expectEqual(Square.b3.bit() | Square.c2.bit(), knight_attacks[@intFromEnum(Square.a1)]);
+
+    // A leaper on either edge file must stay on its own side of the board.
+    for (0..64) |i| {
+        const sq: Square = @enumFromInt(i);
+        const wrap = if (sq.file() == 0) board.file_h else if (sq.file() == 7) board.file_a else continue;
+        try expectEqual(@as(Bitboard, 0), knight_attacks[i] & wrap);
+        try expectEqual(@as(Bitboard, 0), king_attacks[i] & wrap);
+        try expectEqual(@as(Bitboard, 0), pawn_attacks[0][i] & wrap);
+        try expectEqual(@as(Bitboard, 0), pawn_attacks[1][i] & wrap);
+    }
+}
+
+test "pawn attacks: per-square table, set-wise shifts, and the two agree" {
+    try expectEqual(Square.d5.bit() | Square.f5.bit(), pawn_attacks[0][@intFromEnum(Square.e4)]);
+    try expectEqual(Square.d3.bit() | Square.f3.bit(), pawn_attacks[1][@intFromEnum(Square.e4)]);
+    // Only a pawn's own forward diagonals, so rank 1 attacks nothing for black.
+    try expectEqual(@as(Bitboard, 0), pawn_attacks[1][@intFromEnum(Square.e1)]);
+
+    // The set-wise form is the union of the per-square form over the whole set.
+    var rng: std.Random.SplitMix64 = .init(11);
+    for (0..256) |_| {
+        const pawns = rng.next();
+        inline for (.{ Color.white, Color.black }) |c| {
+            var expected: Bitboard = 0;
+            var rest = pawns;
+            while (rest != 0) : (rest &= rest - 1) {
+                expected |= pawn_attacks[@intFromEnum(c)][@ctz(rest)];
+            }
+            try expectEqual(expected, pawnAttacksSet(c, pawns));
+        }
+    }
+}
+
+/// The in-between set derived from nothing but the ray scan: the squares a slider
+/// on `a` reaches with `x` blocking it, intersected with the same seen from `x`.
+/// Only the segment joining the two survives that — rays running outward past
+/// either square are in one set but not the other. Empty when they are unaligned.
+fn betweenSlow(a: usize, x: usize) Bitboard {
+    inline for (.{ Slider.rook, Slider.bishop }) |s| {
+        if (sliderAttacksSlow(s, @enumFromInt(a), 0) & squareBit(x) != 0) {
+            return sliderAttacksSlow(s, @enumFromInt(a), squareBit(x)) &
+                sliderAttacksSlow(s, @enumFromInt(x), squareBit(a));
+        }
+    }
+    return 0;
+}
+
+test "between and line describe the same geometry the ray scan does" {
+    // Both are read as `[king][other]`, so both directions of every pair matter.
+    for (0..64) |a| {
+        for (0..64) |x| {
+            try expectEqual(betweenSlow(a, x), between[a][x]);
+            try expectEqual(between[a][x], between[x][a]);
+            try expectEqual(line[a][x], line[x][a]);
+            // Neither endpoint is ever in the in-between set.
+            try expectEqual(@as(Bitboard, 0), between[a][x] & (squareBit(a) | squareBit(x)));
+
+            // Alignment, decided independently of both tables: two distinct
+            // squares are aligned exactly when one lies in the other's
+            // empty-board slider set.
+            const aligned = a != x and
+                (sliderAttacksSlow(.rook, @enumFromInt(a), 0) |
+                    sliderAttacksSlow(.bishop, @enumFromInt(a), 0)) & squareBit(x) != 0;
+            if (!aligned) {
+                try expectEqual(@as(Bitboard, 0), line[a][x]);
+                continue;
+            }
+
+            // Aligned: the line holds both endpoints and everything between them.
+            try expect(line[a][x] & squareBit(a) != 0 and line[a][x] & squareBit(x) != 0);
+            try expectEqual(between[a][x], between[a][x] & line[a][x]);
+        }
+    }
+}
+
+test "between and line on worked examples" {
+    try expectEqual(Square.b1.bit() | Square.c1.bit() | Square.d1.bit(), between[@intFromEnum(Square.a1)][@intFromEnum(Square.e1)]);
+    try expectEqual(Square.b2.bit() | Square.c3.bit(), between[@intFromEnum(Square.a1)][@intFromEnum(Square.d4)]);
+    // Adjacent squares have nothing between them; a knight's leap is unaligned.
+    try expectEqual(@as(Bitboard, 0), between[@intFromEnum(Square.a1)][@intFromEnum(Square.a2)]);
+    try expectEqual(@as(Bitboard, 0), between[@intFromEnum(Square.a1)][@intFromEnum(Square.b3)]);
+    try expectEqual(@as(Bitboard, 0), line[@intFromEnum(Square.a1)][@intFromEnum(Square.b3)]);
+
+    // A line runs edge to edge, not just between the two squares.
+    try expectEqual(board.rankMask(0), line[@intFromEnum(Square.a1)][@intFromEnum(Square.e1)]);
+    try expectEqual(board.fileMask(4), line[@intFromEnum(Square.e2)][@intFromEnum(Square.e7)]);
+    try expectEqual(
+        Square.a1.bit() | Square.b2.bit() | Square.c3.bit() | Square.d4.bit() |
+            Square.e5.bit() | Square.f6.bit() | Square.g7.bit() | Square.h8.bit(),
+        line[@intFromEnum(Square.c3)][@intFromEnum(Square.f6)],
+    );
+    // A square is aligned with nothing, itself included.
+    try expectEqual(@as(Bitboard, 0), line[@intFromEnum(Square.e4)][@intFromEnum(Square.e4)]);
+}
 
 test "relevant masks: documented bit counts, edge exclusion, table sizes" {
     // Comptime-asserted too, but a test failure reads better than a compile error.

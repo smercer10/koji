@@ -321,8 +321,10 @@ fn rookSquares(kind: Move.Kind, king_to: Square) struct { from: Square, to: Squa
 }
 
 /// The pawn an en passant capture takes: not on the destination square but one
-/// rank back from it, from the capturing side's point of view.
-fn capturedPawnSquare(us: Color, to: Square) Square {
+/// rank back from it, from the capturing side's point of view. Public because
+/// movegen has to reason about the same square when it checks whether taking en
+/// passant exposes its own king — one rule, one home.
+pub fn capturedPawnSquare(us: Color, to: Square) Square {
     const sq = @intFromEnum(to);
     return @enumFromInt(if (us == .white) sq - 8 else sq + 8);
 }

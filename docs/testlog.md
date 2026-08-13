@@ -30,6 +30,11 @@ For a `bench` entry, replace the SPRT fields with: nodes/sec before and after, t
 repetitions, the observed variance, and the `perf stat` figures that matter. A single-run
 comparison is not evidence and should not be logged as one.
 
+Keep an entry to what only the measurement can tell you: the numbers, the conditions that make them
+comparable to the next ones, and what they imply for what to try next. What the code does, what bugs
+were found on the way, and why a design was chosen are in `git log` and in comments at the
+implementation site — restating them here is how this file stops being worth reading.
+
 ---
 
 ## Entries
@@ -38,32 +43,60 @@ comparison is not evidence and should not be logged as one.
 - type:     none
 - result:   n/a
 - bench:    0 (stub — no search exists yet)
-- notes:    Repository created. Toolchain pinned to Zig 0.16.0; build, test, test-slow and bench
-            steps verified; OpenBench `Makefile` contract verified with `EXE=Engine-ABCDEFGH`.
-            No engine code yet, so nothing to measure. The first real entry will be the Phase 1
-            perft baseline.
+- notes:    No engine code, so nothing to measure. Here only so the log starts where the
+            repository does.
 
 ### 2026-08-12 — Sliding attacks: PEXT with fancy-magic fallback
 - branch:   feat/magics
-- type:     none (infrastructure; correctness gated by ray-scan-oracle tests, both schemes
-            tested on every machine regardless of which one is active)
-- result:   n/a
+- type:     bench
+- result:   finding magics at startup measured and REJECTED
 - bench:    0 (stub — no search exists yet)
-- notes:    Scheme is comptime from the build target: PEXT iff BMI2 and not Excavator/Zen 1/Zen 2
-            (microcoded PEXT). This Zen 3 box takes the PEXT path; `-Dcpu=x86_64` builds take
-            magics.
+- machine:  Zen 3, WSL2, ReleaseFast — takes the PEXT path; `-Dcpu=x86_64` takes magics
+- notes:    Seeded random-sparse search (Romstad's method), all 128 squares: **2676ms**, 93% of it
+            the per-candidate `memset` of the collision table (1.42M trials, 124M subset probes).
+            Generation counters instead of clearing: **185ms**. Still pure per-process waste, and
+            paid precisely on the old-AMD targets that take the magic path — so the constants are
+            hardcoded and the search is test-only.
 
-            The planned find-magics-at-startup design was measured and rejected. Seeded
-            random-sparse search (Romstad's method), all 128 squares, ReleaseFast on Zen 3:
-            2676ms — the per-candidate `memset` of the collision table is 93% of it (1.42M
-            trials, 124M subset probes; the high-byte popcount filter saves ~35% of trials but
-            time stays memset-bound). Generation counters instead of clearing: 185ms. Still pure
-            per-process waste, and paid precisely on the old-AMD targets that take the magic
-            path — so the constants are hardcoded (our own, seed "koji") and the search is
-            test-only, with a test that re-runs it and asserts equality with the hardcoded table.
-            Romstad's published "under a second" is apparently post-folklore-optimisation; the
-            naive-but-published form is 15x slower on hardware 20 years newer.
+            Romstad's published "under a second" must be post-folklore-optimisation: the
+            naive-but-published form is 15x slower on hardware 20 years newer. Worth remembering
+            the next time a wiki or paper quotes a timing.
 
-            Startup A/B (`koji version`, 200 runs, ~1.1ms process baseline): init = table fill
-            only, ~0.40ms on both schemes. `zig build test` warm: 215ms including regenerating
-            all 128 magics in ReleaseSafe.
+            Startup A/B (`koji version`, 200 runs, ~1.1ms process baseline): table fill is
+            ~0.40ms on either scheme, so init cost is not a reason to prefer one.
+
+### 2026-08-13 — Legal movegen: the Phase 1 perft baseline
+- branch:   feat/movegen
+- type:     perft + bench
+- result:   PASS — `testdata/perft.epd` exact to depth 6, 35/35 checks, 16,270,939,707 nodes
+- bench:    0 (stub — no search exists yet)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    First movegen, so this is a baseline to defend, not a comparison.
+
+            `perf stat -r 5`, per `generate()` call — that is per *interior* node, which perft's
+            leaf count is not (5,072,213 calls for startpos D6, 4,185,553 for Kiwipete D5):
+
+                                    startpos D6      Kiwipete D5
+              branching factor         23.5             46.3
+              instructions / call      1864             2244
+              cycles / call             636              842
+              Mnps                     166.1            247.8
+
+            **The never-regress figure is instructions per call, not NPS.** There is no CPU
+            governor control under WSL2: two 15-run batches of the *same* binary differed by ~4%
+            across machine states, against ~1.3% within a batch, so wall clock here cannot resolve
+            anything under about 5%. Instructions are deterministic (+/-0.00% over 5 runs) and are
+            what showed the later en passant fix to be free (+0.11%).
+
+            Kiwipete emits 2.0x the moves per call for 1.2x the instructions. Fitting
+            `instructions = fixed + per_move x branching` across the two points gives ~1,470 fixed
+            and ~17 per generated move: about 79% of startpos's work is spent before a single move
+            is built — the king danger sweep, `attackersTo` for the checkers, the sniper loop. Two
+            points fit a line exactly, so treat the constants as an estimate, but the direction is
+            not in doubt and it puts any future work on this number in the per-node preamble rather
+            than the serialisation loops.
+
+            Cache misses are ~0.1 per call against the 64KB `between` + `line` footprint, so the
+            ablation filed under ROADMAP's candidate ideas would have to pay for itself somewhere
+            other than misses. Assembly spot-checked: every comptime table lands in `.rodata` and
+            the PEXT path is live.

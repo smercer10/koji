@@ -44,8 +44,9 @@ zig build                  # ReleaseFast by default
 | `zig build bench` | fixed benchmark; prints `<nodes> nodes <nps> nps` |
 | `make EXE=Engine-XYZ` | OpenBench-compatible build |
 
-The engine binary is also the tooling: `koji bench`, `koji perft <depth>` and `koji epd <file>`
-are subcommands rather than scripts, so they cannot drift out of sync with the engine they measure.
+The engine binary is also the tooling: `koji bench`, `koji perft <depth> [fen]`,
+`koji divide <depth> [fen]` and `koji epd <file>` are subcommands rather than scripts, so they cannot
+drift out of sync with the engine they measure.
 
 ## How this project is built
 
