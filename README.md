@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.svg" alt="koji logo" width="210">
+</p>
+
 # koji
 
 [![ci](https://github.com/smercer10/koji/actions/workflows/ci.yml/badge.svg)](https://github.com/smercer10/koji/actions/workflows/ci.yml)
