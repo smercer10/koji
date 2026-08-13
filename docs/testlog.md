@@ -43,35 +43,27 @@ implementation site — restating them here is how this file stops being worth r
 - type:     none
 - result:   n/a
 - bench:    0 (stub — no search exists yet)
-- notes:    Repository created. Toolchain pinned to Zig 0.16.0; build, test, test-slow and bench
-            steps verified; OpenBench `Makefile` contract verified with `EXE=Engine-ABCDEFGH`.
-            No engine code yet, so nothing to measure. The first real entry will be the Phase 1
-            perft baseline.
+- notes:    No engine code, so nothing to measure. Here only so the log starts where the
+            repository does.
 
 ### 2026-08-12 — Sliding attacks: PEXT with fancy-magic fallback
 - branch:   feat/magics
-- type:     none (infrastructure; correctness gated by ray-scan-oracle tests, both schemes
-            tested on every machine regardless of which one is active)
-- result:   n/a
+- type:     bench
+- result:   finding magics at startup measured and REJECTED
 - bench:    0 (stub — no search exists yet)
-- notes:    Scheme is comptime from the build target: PEXT iff BMI2 and not Excavator/Zen 1/Zen 2
-            (microcoded PEXT). This Zen 3 box takes the PEXT path; `-Dcpu=x86_64` builds take
-            magics.
+- machine:  Zen 3, WSL2, ReleaseFast — takes the PEXT path; `-Dcpu=x86_64` takes magics
+- notes:    Seeded random-sparse search (Romstad's method), all 128 squares: **2676ms**, 93% of it
+            the per-candidate `memset` of the collision table (1.42M trials, 124M subset probes).
+            Generation counters instead of clearing: **185ms**. Still pure per-process waste, and
+            paid precisely on the old-AMD targets that take the magic path — so the constants are
+            hardcoded and the search is test-only.
 
-            The planned find-magics-at-startup design was measured and rejected. Seeded
-            random-sparse search (Romstad's method), all 128 squares, ReleaseFast on Zen 3:
-            2676ms — the per-candidate `memset` of the collision table is 93% of it (1.42M
-            trials, 124M subset probes; the high-byte popcount filter saves ~35% of trials but
-            time stays memset-bound). Generation counters instead of clearing: 185ms. Still pure
-            per-process waste, and paid precisely on the old-AMD targets that take the magic
-            path — so the constants are hardcoded (our own, seed "koji") and the search is
-            test-only, with a test that re-runs it and asserts equality with the hardcoded table.
-            Romstad's published "under a second" is apparently post-folklore-optimisation; the
-            naive-but-published form is 15x slower on hardware 20 years newer.
+            Romstad's published "under a second" must be post-folklore-optimisation: the
+            naive-but-published form is 15x slower on hardware 20 years newer. Worth remembering
+            the next time a wiki or paper quotes a timing.
 
-            Startup A/B (`koji version`, 200 runs, ~1.1ms process baseline): init = table fill
-            only, ~0.40ms on both schemes. `zig build test` warm: 215ms including regenerating
-            all 128 magics in ReleaseSafe.
+            Startup A/B (`koji version`, 200 runs, ~1.1ms process baseline): table fill is
+            ~0.40ms on either scheme, so init cost is not a reason to prefer one.
 
 ### 2026-08-13 — Legal movegen: the Phase 1 perft baseline
 - branch:   feat/movegen
