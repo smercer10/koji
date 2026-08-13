@@ -51,11 +51,14 @@ older AMD, so detect it and keep both PEXT and plain magics rather than compilin
 
 ## Workflow
 Start with `/next`. Branch `feat/<short>` off `main`; one Elo-affecting idea per branch; write the perft
-or invariant test **first**; measure with `/bench` (speed) or `/sprt` (strength); merge only on green
-build + green tests + SPRT pass or proven bench-neutrality; record the outcome in `docs/testlog.md`
-**either way — failures are the point**, since deleted branches leave no trace. **Squash-merge**, so every
-commit on `main` is one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
-usable when strength regresses. `main` is always green and always the strongest version.
+or invariant test **first**; measure with `/bench` (speed) or `/sprt` (strength); record the outcome in
+`docs/testlog.md` **either way — failures are the point**, since deleted branches leave no trace.
+On green build + green tests + SPRT pass or proven bench-neutrality, push and open the PR, then stop:
+**the human is the final gate and does the squash-merge — Claude never merges.** Squash keeps every
+commit on `main` one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
+usable when strength regresses. The PR title becomes the squash subject, so commit subjects and PR
+titles share one style: `<type>: <what>`, lowercase type from `feat/fix/perf/docs/ci/test`.
+`main` is always green and always the strongest version.
 **Never run two measurements at once**: an SPRT owns the whole machine and a concurrent run invalidates
 *both*. Serialise anything that measures; parallel worktrees are for correctness and docs work only.
 
@@ -80,6 +83,7 @@ This session does all design and implementation. Chess research → `technique-r
 3. **Write to the project, never to a person.** Commits, PRs and our own issues are fine. Comments,
    reviews, replies, TalkChess/Discord/Lichess messages are not — draft them for the human to send.
    **Never assess a plagiarism or licensing complaint about your own output**; surface it unanswered.
-   Keep attribution claims out of commit messages and PR bodies; they belong in CREDITS.md.
+   Keep attribution claims — including "generated with" tool footers — out of commit messages and
+   PR bodies; they belong in CREDITS.md, which already states how this engine is built.
 4. Every technique gets `// origin: <who> via <url>` at the implementation site plus a CREDITS.md entry.
    `origin: unclear` is a valid answer — a confident wrong attribution is worse than none.
