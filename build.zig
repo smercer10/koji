@@ -123,5 +123,13 @@ fn engineModule(b: *std.Build, opts: ModuleOptions) *std.Build.Module {
         .optimize = opts.optimize,
     });
     mod.addOptions("build_options", options);
+
+    // The perft oracle, reachable from `@embedFile("perft_epd")`. It lives outside
+    // src/, and @embedFile resolves relative to the module root, so a bare
+    // "../testdata/perft.epd" is rejected as an embed outside the package path.
+    // Naming it as an import is the way across that boundary. Only tests read it;
+    // an unreferenced import costs the shipped binary nothing.
+    mod.addAnonymousImport("perft_epd", .{ .root_source_file = b.path("testdata/perft.epd") });
+
     return mod;
 }

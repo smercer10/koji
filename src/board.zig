@@ -242,12 +242,7 @@ pub const Board = struct {
             for (0..8) |f| {
                 const p = b.pieceAt(Square.make(@intCast(f), r));
                 try w.writeByte(' ');
-                if (p == .none) {
-                    try w.writeByte('.');
-                } else {
-                    const upper = "PNBRQK"[@intFromEnum(p.pieceType())];
-                    try w.writeByte(if (p.color() == .black) std.ascii.toLower(upper) else upper);
-                }
+                try w.writeByte(if (p == .none) '.' else pieceChar(p));
             }
             try w.writeByte('\n');
         }
@@ -258,6 +253,50 @@ pub const Board = struct {
         }
         try w.writeAll("\n");
 
+        // The status line *is* the FEN tail, so it is the same code.
+        try b.writeTail(w);
+        try w.writeByte('\n');
+    }
+
+    // --- FEN ------------------------------------------------------------------
+    //
+    // origin: Forsyth-Edwards Notation — David Forsyth (19th c., the placement
+    //         run-length notation); formalised for computer chess by Steven
+    //         Edwards as part of the PGN standard, 1994
+    //         via https://www.chessprogramming.org/Forsyth-Edwards_Notation
+    // origin: EPD, and the optional-clock defaults this parser follows —
+    //         John Stanback and Steven Edwards
+    //         via https://www.chessprogramming.org/Extended_Position_Description
+
+    /// Serialises to Forsyth-Edwards Notation, without a trailing newline.
+    /// `fromFen` of this is the board it came from, for every position koji
+    /// can reach — asserted over `testdata/perft.epd`.
+    pub fn writeFen(b: *const Board, w: *Io.Writer) Io.Writer.Error!void {
+        for (0..8) |i| {
+            const r: u3 = @intCast(7 - i);
+            var empty: u8 = 0;
+            for (0..8) |f| {
+                const p = b.pieceAt(Square.make(@intCast(f), r));
+                if (p == .none) {
+                    empty += 1;
+                    continue;
+                }
+                if (empty != 0) {
+                    try w.writeByte('0' + empty);
+                    empty = 0;
+                }
+                try w.writeByte(pieceChar(p));
+            }
+            if (empty != 0) try w.writeByte('0' + empty);
+            if (r != 0) try w.writeByte('/');
+        }
+        try w.writeByte(' ');
+        try b.writeTail(w);
+    }
+
+    /// Everything after the placement: side, castling, en passant, clocks.
+    /// Shared with `format` so the debug dump and the real FEN cannot disagree.
+    fn writeTail(b: *const Board, w: *Io.Writer) Io.Writer.Error!void {
         try w.writeByte(if (b.side == .white) 'w' else 'b');
         try w.writeByte(' ');
         if (@as(u4, @bitCast(b.castling)) == 0) {
@@ -270,9 +309,168 @@ pub const Board = struct {
         }
         try w.writeByte(' ');
         if (b.ep) |sq| try w.writeAll(@tagName(sq)) else try w.writeByte('-');
-        try w.print(" {d} {d}\n", .{ b.halfmove, b.fullmove });
+        try w.print(" {d} {d}", .{ b.halfmove, b.fullmove });
+    }
+
+    /// Parses Forsyth-Edwards Notation. Two deliberate tolerances, both so that
+    /// an EPD record parses unchanged — the perft oracle and every published
+    /// test suite are EPD, not FEN:
+    ///
+    ///  1. The clocks are read only when they are entirely digits. EPD replaces
+    ///     them with `hmvc`/`fmvn` operations whose defaults are 0 and 1, so a
+    ///     non-numeric field 5 means "operations start here", not an error.
+    ///     (The operations themselves are not interpreted; nothing needs them
+    ///     yet, and `hmvc` has never mattered to a perft or a test suite.)
+    ///  2. Anything after the last field consumed is ignored, which is what lets
+    ///     a raw `<fen> ;D1 20 ;D2 400` line be handed straight over.
+    ///
+    /// The cost of (2) lands on UCI `position fen <fen> moves ...` in Phase 2:
+    /// that handler must cut the line at the `moves` token itself, because this
+    /// parser will otherwise swallow the move list without complaint.
+    pub fn fromFen(text: []const u8) FenError!Board {
+        var b: Board = .{};
+        var it = std.mem.tokenizeAny(u8, text, " \t");
+
+        try parsePlacement(&b, it.next() orelse return error.MissingField);
+
+        const side = it.next() orelse return error.MissingField;
+        b.side = if (isByte(side, 'w'))
+            .white
+        else if (isByte(side, 'b'))
+            .black
+        else
+            return error.InvalidSide;
+
+        try parseCastling(&b, it.next() orelse return error.MissingField);
+        // Needs `side`: the legal ep rank follows from whose turn it is.
+        try parseEnPassant(&b, it.next() orelse return error.MissingField);
+
+        if (nextIfNumeric(&it)) |halfmove| {
+            b.halfmove = std.fmt.parseInt(u8, halfmove, 10) catch return error.InvalidNumber;
+            if (nextIfNumeric(&it)) |fullmove| {
+                b.fullmove = std.fmt.parseInt(u16, fullmove, 10) catch return error.InvalidNumber;
+                if (b.fullmove == 0) return error.InvalidNumber;
+            }
+        }
+
+        // Two checks past syntax, because movegen's preconditions are not
+        // recoverable further in: it takes `lsb(pieces(c, .king))`, which
+        // asserts a non-empty board — and asserts vanish in ReleaseFast. A pawn
+        // on the back rank is the same kind of trap: no move out of it is
+        // representable. Both are cheap here and unfixable at depth 20.
+        for ([_]Color{ .white, .black }) |c| {
+            if (@popCount(b.pieces(c, .king)) != 1) return error.InvalidPlacement;
+        }
+        if (b.by_type[@intFromEnum(PieceType.pawn)] & (rankMask(0) | rankMask(7)) != 0) {
+            return error.InvalidPlacement;
+        }
+
+        return b;
     }
 };
+
+pub const FenError = error{
+    MissingField,
+    InvalidPlacement,
+    InvalidSide,
+    InvalidCastling,
+    InvalidEnPassant,
+    InvalidNumber,
+};
+
+/// Indexed by `PieceType`; lowercased for black. The one place the letters live.
+const piece_chars = "PNBRQK";
+
+fn pieceChar(p: Piece) u8 {
+    const upper = piece_chars[@intFromEnum(p.pieceType())];
+    return if (p.color() == .black) std.ascii.toLower(upper) else upper;
+}
+
+fn pieceFromChar(ch: u8) ?Piece {
+    const idx = std.mem.indexOfScalar(u8, piece_chars, std.ascii.toUpper(ch)) orelse return null;
+    return Piece.make(if (std.ascii.isLower(ch)) .black else .white, @enumFromInt(idx));
+}
+
+fn isByte(field: []const u8, ch: u8) bool {
+    return field.len == 1 and field[0] == ch;
+}
+
+/// Consumes the next token only if it is entirely ASCII digits. `parseInt` alone
+/// is too permissive for a clock: it takes a leading `+` and maps `-0` to 0.
+fn nextIfNumeric(it: *std.mem.TokenIterator(u8, .any)) ?[]const u8 {
+    const tok = it.peek() orelse return null;
+    for (tok) |ch| if (!std.ascii.isDigit(ch)) return null;
+    return it.next();
+}
+
+/// Ranks run 8→1, files a→h within a rank; digits are runs of empty squares.
+/// Non-maximal runs (`44` for `8`) are accepted — unambiguous, and output
+/// re-canonicalises them.
+fn parsePlacement(b: *Board, field: []const u8) FenError!void {
+    var ranks = std.mem.splitScalar(u8, field, '/');
+    for (0..8) |i| {
+        const r: u3 = @intCast(7 - i);
+        var f: u8 = 0;
+        for (ranks.next() orelse return error.InvalidPlacement) |ch| {
+            switch (ch) {
+                '1'...'8' => f += ch - '0',
+                else => {
+                    // Guards the @intCast below as much as the rank width.
+                    if (f >= 8) return error.InvalidPlacement;
+                    const p = pieceFromChar(ch) orelse return error.InvalidPlacement;
+                    b.put(Square.make(@intCast(f), r), p);
+                    f += 1;
+                },
+            }
+            if (f > 8) return error.InvalidPlacement;
+        }
+        if (f != 8) return error.InvalidPlacement;
+    }
+    if (ranks.next() != null) return error.InvalidPlacement;
+}
+
+/// Standard chess only. Shredder-FEN and X-FEN spell the rights as rook files
+/// (`AHah`), and those are rejected rather than ignored: silently dropping them
+/// yields a position that is subtly wrong instead of a complaint. Chess960 is on
+/// no roadmap phase; when it lands, this is where it starts.
+fn parseCastling(b: *Board, field: []const u8) FenError!void {
+    if (isByte(field, '-')) return;
+    var seen: u4 = 0;
+    for (field) |ch| {
+        const bit: u4 = switch (ch) {
+            'K' => 1 << 0,
+            'Q' => 1 << 1,
+            'k' => 1 << 2,
+            'q' => 1 << 3,
+            else => return error.InvalidCastling,
+        };
+        if (seen & bit != 0) return error.InvalidCastling;
+        seen |= bit;
+    }
+    b.castling = .{
+        .white_kingside = seen & 1 << 0 != 0,
+        .white_queenside = seen & 1 << 1 != 0,
+        .black_kingside = seen & 1 << 2 != 0,
+        .black_queenside = seen & 1 << 3 != 0,
+    };
+}
+
+fn parseEnPassant(b: *Board, field: []const u8) FenError!void {
+    if (isByte(field, '-')) return;
+    if (field.len != 2) return error.InvalidEnPassant;
+    const f = field[0];
+    const r = field[1];
+    if (f < 'a' or f > 'h' or r < '1' or r > '8') return error.InvalidEnPassant;
+
+    // The target is the square a double-pushed pawn skipped, so its rank is
+    // fixed by whose turn it now is: white to move means black just pushed
+    // (rank 6), black to move means white did (rank 3). FEN sets this whether
+    // or not the capture is actually available, so it is not a legality check —
+    // a square on any other rank is a malformed record.
+    const sq = Square.make(@intCast(f - 'a'), @intCast(r - '1'));
+    if (sq.rank() != @as(u3, if (b.side == .white) 5 else 2)) return error.InvalidEnPassant;
+    b.ep = sq;
+}
 
 // The layout claims above are contracts, not hopes: piece placement is 64 bytes
 // of bitboards plus a 64-byte mailbox.
@@ -384,6 +582,131 @@ test "put and remove keep the representation consistent" {
     // A deliberately desynced board must fail the invariant.
     b.by_color[0] ^= Square.a3.bit();
     try expect(!b.consistent());
+}
+
+// --- FEN tests ---------------------------------------------------------------
+
+const startpos_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+/// Serialises to a stack buffer. 91 bytes is the longest FEN this engine can
+/// produce (71 placement + 20 tail), so 128 never truncates.
+fn fenOf(b: *const Board, buf: []u8) ![]const u8 {
+    var w: Io.Writer = .fixed(buf);
+    try b.writeFen(&w);
+    return w.buffered();
+}
+
+fn expectRoundTrip(fen: []const u8) !void {
+    const b = try Board.fromFen(fen);
+    try expect(b.consistent());
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(fen, try fenOf(&b, &buf));
+}
+
+test "startpos round-trips through FEN in both directions" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(startpos_fen, try fenOf(&Board.startpos, &buf));
+    try expect(std.meta.eql(Board.startpos, try Board.fromFen(startpos_fen)));
+}
+
+test "every position in testdata/perft.epd round-trips" {
+    // The oracle file is the single source of these FENs — a copy in a test
+    // array here would be free to drift from the one perft is checked against.
+    var lines = std.mem.splitScalar(u8, @embedFile("perft_epd"), '\n');
+    var seen: usize = 0;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        // The FEN is everything before the first perft operation.
+        const cut = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+        try expectRoundTrip(std.mem.trimEnd(u8, line[0..cut], " \t"));
+
+        // The whole line, perft operations included, must parse identically:
+        // that is what lets the `epd` command hand lines straight to the parser.
+        try expect(std.meta.eql(
+            try Board.fromFen(line[0..cut]),
+            try Board.fromFen(line),
+        ));
+        seen += 1;
+    }
+    // Without this a renamed or empty embed would pass vacuously.
+    try expectEqual(@as(usize, 6), seen);
+}
+
+test "en passant and castling subsets round-trip" {
+    // No position in perft.epd carries an ep square, so the field would
+    // otherwise only ever be exercised as '-'.
+    try expectRoundTrip("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+    try expectRoundTrip("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3");
+
+    for ([_][]const u8{ "-", "K", "Q", "k", "q", "kq", "KQ", "Kq", "KQkq" }) |rights| {
+        var buf: [128]u8 = undefined;
+        const fen = try std.fmt.bufPrint(
+            &buf,
+            "r3k2r/8/8/8/8/8/8/R3K2R w {s} - 0 1",
+            .{rights},
+        );
+        try expectRoundTrip(fen);
+    }
+}
+
+test "FEN tolerances: optional clocks, EPD operations, non-maximal runs" {
+    // Four fields: EPD's hmvc/fmvn defaults.
+    const short = try Board.fromFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -");
+    try expectEqual(@as(u8, 0), short.halfmove);
+    try expectEqual(@as(u16, 1), short.fullmove);
+    try expect(std.meta.eql(Board.startpos, short));
+
+    // A strict EPD record puts operations, not digits, in field 5.
+    const epd = try Board.fromFen(
+        \\rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - bm e4; id "start";
+    );
+    try expect(std.meta.eql(Board.startpos, epd));
+
+    // Non-maximal empty runs are unambiguous; output re-canonicalises them.
+    var buf: [128]u8 = undefined;
+    const loose = try Board.fromFen("rnbqkbnr/pppppppp/44/8/17/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    try std.testing.expectEqualStrings(startpos_fen, try fenOf(&loose, &buf));
+}
+
+test "malformed FEN is rejected with a specific error" {
+    const cases = [_]struct { []const u8, FenError }{
+        // Placement.
+        .{ "rnbqkbnr/pppppppp/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "rnbqkbnrq/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "rnbqkbn/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "rnbqkbnr/pppppppp/08/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "xnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        // Structural: movegen's preconditions, not syntax.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK w KQkq - 0 1", error.InvalidPlacement },
+        .{ "rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        .{ "Pnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", error.InvalidPlacement },
+        // Side to move.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1", error.InvalidSide },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR ww KQkq - 0 1", error.InvalidSide },
+        // Castling, including the Shredder/X-FEN file letters koji does not accept.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1", error.InvalidCastling },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1", error.InvalidCastling },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KK - 0 1", error.InvalidCastling },
+        // En passant, including a square on the wrong rank for the side to move.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1", error.InvalidEnPassant },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq z6 0 1", error.InvalidEnPassant },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e 0 1", error.InvalidEnPassant },
+        .{ "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e3 0 1", error.InvalidEnPassant },
+        // Clocks.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 300 1", error.InvalidNumber },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0", error.InvalidNumber },
+        // Truncated.
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", error.MissingField },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w", error.MissingField },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq", error.MissingField },
+        .{ "", error.MissingField },
+    };
+    for (cases) |c| {
+        try std.testing.expectError(c[1], Board.fromFen(c[0]));
+    }
 }
 
 test "debug dump renders startpos" {

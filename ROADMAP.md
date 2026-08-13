@@ -32,9 +32,11 @@ options. **Met — Phase 0 complete.**
       and since agent sessions push with that same token, the ruleset stops accidents, not us
 - [x] Bitboards + mailbox
 - [x] PEXT magics with a plain-magic fallback for non-PEXT targets
-- [ ] make/unmake
+- [x] FEN parsing and output, tolerant of EPD records so the perft oracle parses unchanged
+- [ ] Move encoding + make/unmake — they ship together; a `Move` with no consumer is untestable
 - [ ] Zobrist hashing, fixed seed
-- [ ] FEN parsing and output
+- [ ] Legal move generation: leapers, pawns, castling, check and pin legality
+- [ ] `perft` driver and `divide`, run over `testdata/perft.epd` from `test` and `test-slow`
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
       `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,

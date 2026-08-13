@@ -56,6 +56,17 @@ Two rules:
 > https://www.chessprogramming.org/BMI2 — trail: *Gerd Isenberg's writeup with the
 > latency/table-size figures, TalkChess, 2013; the standard fast path on BMI2 hardware since*
 
+> **Forsyth-Edwards Notation** — origin: *David Forsyth, 19th century, for the run-length placement
+> notation; formalised for computer chess by Steven Edwards as part of the Portable Game Notation
+> standard, 1994* via https://www.chessprogramming.org/Forsyth-Edwards_Notation
+
+> **Extended Position Description** — origin: *John Stanback and Steven Edwards; first implemented
+> in Stanback's Zarkov, specified by Edwards alongside PGN* via
+> https://www.chessprogramming.org/Extended_Position_Description — koji's parser follows EPD's
+> optional `hmvc`/`fmvn` clock defaults (0 and 1) so an EPD record parses as a FEN. The trailing
+> `;D<n> <nodes>` perft-suite convention in `testdata/perft.epd` is *not* part of that standard —
+> origin: *unclear (community convention)*
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming
