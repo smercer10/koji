@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="koji">
+  <title>koji</title>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#8a5fd0" stop-opacity="0.42"/>
+      <stop offset="0.6" stop-color="#5a3a9e" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#5a3a9e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.72">
+      <stop offset="0.55" stop-color="#030209" stop-opacity="0"/>
+      <stop offset="1" stop-color="#030209" stop-opacity="0.75"/>
+    </radialGradient>
+    <linearGradient id="ivory" gradientUnits="userSpaceOnUse" x1="0" y1="88" x2="0" y2="448">
+      <stop offset="0" stop-color="#f6f2ea"/>
+      <stop offset="1" stop-color="#cec5b6"/>
+    </linearGradient>
+    <!-- the shadow that swallows the left half -->
+    <linearGradient id="shade" gradientUnits="userSpaceOnUse" x1="114" y1="0" x2="260" y2="0">
+      <stop offset="0" stop-color="#05030c" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#140b26" stop-opacity="0.30"/>
+    </linearGradient>
+    <radialGradient id="ao">
+      <stop offset="0" stop-color="#241c14" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#241c14" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#020108" flood-opacity="0.7"/>
+    </filter>
+  </defs>
+
+  <!-- Scene: darkness, a violet backlight, vignette. The badge paints its own opaque ground rather
+       than sitting transparent, so an ivory mask on near-black renders identically on GitHub's light
+       and dark themes from one file. -->
+  <rect width="512" height="512" rx="64" fill="#0a0716"/>
+  <rect width="512" height="512" rx="64" fill="url(#glow)"/>
+  <rect width="512" height="512" rx="64" fill="url(#vig)"/>
+
+  <!-- mask: peaked at the seam, near-straight sides, pointed chin -->
+  <g filter="url(#ds)">
+    <path d="M256 88
+             C294 94 331 106 362 120 C385 132 400 152 400 192
+             C400 239 392 286 378 324 C352 372 304 417 262 444
+             Q256 452 250 444
+             C208 417 160 372 134 324 C120 286 112 239 112 192
+             C112 152 127 132 150 120 C181 106 218 94 256 88 Z"
+          fill="url(#ivory)"/>
+  </g>
+
+  <!-- modelling: socket occlusion and brow shading -->
+  <circle cx="184" cy="252" r="44" fill="url(#ao)"/>
+  <circle cx="328" cy="252" r="46" fill="url(#ao)"/>
+  <ellipse cx="256" cy="192" rx="140" ry="30" fill="url(#ao)" opacity="0.4"/>
+
+  <!-- left eye: the same circular socket, uncut -->
+  <circle cx="184" cy="252" r="25" fill="#0a0806"/>
+
+  <!-- right eye: the same circle, cut into a four-pointed star — the long slits curve in toward the seam -->
+  <g fill="#0a0806">
+    <circle cx="328" cy="252" r="25"/>
+    <path d="M324 234 C321 214 318 196 316 180 C325 198 330 216 333 234 Z"/>
+    <path d="M324 270 C321 292 317 310 312 330 C319 308 330 288 333 270 Z"/>
+    <path d="M314 247 C306 248 296 249 285 251 C296 253 306 254 314 257 Z"/>
+    <path d="M342 247 C352 248 359 249 367 251 C359 253 352 254 342 257 Z"/>
+  </g>
+
+  <!-- smile: shallow tapered crescent, hooked up at the corners -->
+  <path d="M176 336 Q256 400 336 336 Q256 384 176 336 Z" fill="#0d0a08"/>
+
+  <!-- The left half falls into shadow, features and all: laid over the finished face rather than
+       filling the half flat, so the eye and smile dim with the surface instead of vanishing. -->
+  <path d="M256 88 C218 94 181 106 150 120 C127 132 112 152 112 192
+           C112 239 120 286 134 324 C160 372 208 417 250 444
+           Q254 450 256 450 Z"
+        fill="url(#shade)"/>
+  <!-- rim light holding the silhouette -->
+  <path d="M256 88 C218 94 181 106 150 120 C127 132 112 152 112 192
+           C112 239 120 286 134 324 C160 372 208 417 250 444"
+        fill="none" stroke="#b9a3e8" stroke-width="2" opacity="0.45"/>
+
+  <!-- seam: shadow line with a hairline ridge catch-light -->
+  <path d="M256 90 V448" stroke="#0b0814" stroke-width="2" opacity="0.5"/>
+  <path d="M258 90 V448" stroke="#ffffff" stroke-width="1" opacity="0.1"/>
+</svg>
