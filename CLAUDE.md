@@ -57,7 +57,7 @@ On green build + green tests + SPRT pass or proven bench-neutrality, push and op
 **the human is the final gate and does the squash-merge — Claude never merges.** Squash keeps every
 commit on `main` one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
 usable when strength regresses. The PR title becomes the squash subject, so commit subjects and PR
-titles share one style: `<type>: <what>`, lowercase type from `feat/fix/perf/docs/ci/test`.
+titles share one style: `<type>: <what>`, lowercase type from `feat/fix/perf/docs/ci/test/chore`.
 `main` is always green and always the strongest version.
 **Never run two measurements at once**: an SPRT owns the whole machine and a concurrent run invalidates
 *both*. Serialise anything that measures; parallel worktrees are for correctness and docs work only.
