@@ -14,6 +14,7 @@ const Io = std.Io;
 const attacks = @import("attacks.zig");
 const board = @import("board.zig");
 const Board = board.Board;
+const movegen = @import("movegen.zig");
 const perft_mod = @import("perft.zig");
 
 /// Bumped per release; reported by `uci` and `--version`.
@@ -115,7 +116,7 @@ fn perftCommand(
     var b = Board.startpos;
     if (args.len > 1) {
         const fen = try std.mem.join(arena, " ", args[1..]);
-        b = Board.fromFen(fen) catch |err| {
+        b = movegen.fromFen(fen) catch |err| {
             try out.print("{s}: invalid FEN: {s}\n", .{ name, @errorName(err) });
             try out.flush();
             return error.InvalidArgument;

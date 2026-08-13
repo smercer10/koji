@@ -104,7 +104,9 @@ pub fn runSuite(text: []const u8, budget: u64, w: ?*Io.Writer) !Result {
 
         const cut = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
         const fen = std.mem.trimEnd(u8, line[0..cut], " \t");
-        var b = try Board.fromFen(fen);
+        // The suite file comes from outside the program, so it goes through the
+        // validating parser rather than `Board.fromFen`.
+        var b = try movegen.fromFen(fen);
         result.positions += 1;
 
         // Operations are `;D<depth> <nodes>`; anything else in the record is not

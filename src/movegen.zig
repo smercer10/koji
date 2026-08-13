@@ -28,6 +28,7 @@ const board = @import("board.zig");
 const Bitboard = board.Bitboard;
 const Board = board.Board;
 const Color = board.Color;
+const Piece = board.Piece;
 const PieceType = board.PieceType;
 const Square = board.Square;
 const lsb = board.lsb;
@@ -105,6 +106,59 @@ fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard {
     return set;
 }
 
+// --- position preconditions -----------------------------------------------------------
+
+pub const IllegalPosition = error{IllegalPosition};
+
+/// The preconditions `Board.fromFen` cannot check for itself. It already rejects
+/// what it can see from placement alone — one king a side, no back-rank pawn, no
+/// castling right without the king and rook to back it — but these two need
+/// either attack detection or the en passant rule, and importing this file from
+/// `board.zig` would invert the import graph.
+///
+/// Neither position below is reachable in a game; both are writable as a FEN, and
+/// `koji perft <fen>` and `epd <file>` take FENs from outside the program. Both
+/// are memory-unsafe rather than merely wrong, and only in release builds, where
+/// the asserts that would catch them are gone:
+///
+///  1. **The side that just moved left its own king attacked.** Movegen would
+///     generate a capture of that king, and the next `lsb(pieces(them, .king))`
+///     is `@ctz(0)` — 64 into a `u6`. Two kings standing next to each other is
+///     the same fault, since a king never appears in its own danger set.
+///  2. **An en passant square with no double push behind it.** Movegen would
+///     generate the capture, and `makeMove` calls `Board.remove` on an empty
+///     square, whose `.none` piece type indexes `by_type[7]` — one word past a
+///     `[6]Bitboard`, onto `by_color`.
+pub fn legalPosition(b: *const Board) bool {
+    const mover = b.side;
+    const waiting = mover.flip();
+
+    // The side to move may be in check; the side that just moved may not be.
+    const their_king = lsb(b.pieces(waiting, .king));
+    if (attackersTo(b, their_king, b.occupancy()) & b.by_color[@intFromEnum(mover)] != 0) {
+        return false;
+    }
+
+    if (b.ep) |ep| {
+        // `parseEnPassant` has already fixed the rank from the side to move, so
+        // the two squares the double push must have used follow from the file.
+        if (b.pieceAt(move.capturedPawnSquare(mover, ep)) != Piece.make(waiting, .pawn)) return false;
+        if (b.pieceAt(ep) != .none) return false;
+        if (b.pieceAt(Square.make(ep.file(), if (mover == .white) 6 else 1)) != .none) return false;
+    }
+
+    return true;
+}
+
+/// `Board.fromFen` plus `legalPosition`. Every path that takes a FEN from outside
+/// the program goes through this; `Board.fromFen` on its own is for positions
+/// already known to be sound, which is what the tests in `board.zig` use it for.
+pub fn fromFen(text: []const u8) (board.FenError || IllegalPosition)!Board {
+    const b = try Board.fromFen(text);
+    if (!legalPosition(&b)) return error.IllegalPosition;
+    return b;
+}
+
 // --- generation ----------------------------------------------------------------------
 
 /// Everything a generator needs about the position, computed once per node.
@@ -115,6 +169,9 @@ const Ctx = struct {
     ksq: Square,
     /// Squares the opponent covers with our king lifted off the board.
     danger: Bitboard,
+    /// Enemy pieces attacking our king — at most one, since double check returns
+    /// before a `Ctx` is built.
+    checkers: Bitboard,
     /// Where a non-king move may land: `~own`, or under single check the squares
     /// that block the checking ray plus the checker itself.
     target: Bitboard,
@@ -168,6 +225,7 @@ fn generateFor(comptime us: Color, b: *const Board, list: *MoveList) void {
         .enemy = enemy,
         .ksq = ksq,
         .danger = danger,
+        .checkers = checkers,
         .target = if (checkers != 0) blk: {
             // Block anywhere along the ray, or capture the checker. A knight or
             // pawn checker is never aligned with the king, so `between` is empty
@@ -281,6 +339,10 @@ fn generatePawns(comptime us: Color, c: Ctx, list: *MoveList) void {
 /// answer a check by a pawn whose square is not in `target`; and it vacates two
 /// squares of the same rank at once, which can expose a rook or queen along that
 /// rank even though neither pawn was pinned on its own.
+///
+/// The price of stepping around `target` is that this function owes the evasion
+/// rule back in full, and the occupancy test alone does not pay it — that test
+/// only sees sliders. The explicit checker test below covers the rest.
 //
 // origin: the horizontal en passant pin — unclear (folklore; CPW states the extra
 //         test is required and names no discoverer). Position 3 of the perft
@@ -292,6 +354,15 @@ fn generateEnPassant(comptime us: Color, c: Ctx, list: *MoveList, ep: Square, pa
     const diag = c.b.pieces(them, .bishop) | queens;
     const orth = c.b.pieces(them, .rook) | queens;
     const captured = move.capturedPawnSquare(us, ep);
+
+    // Bypassing `target` means the evasion rule has to be restated here, and it
+    // is not the same rule. The capture removes exactly one enemy piece — the
+    // pawn on `captured` — so any checker that is not that pawn is still giving
+    // check afterwards, unless it is a slider whose ray the moving pawn happens
+    // to block. Slider checks are therefore left to the occupancy test below,
+    // which sees the block; a knight or a second pawn is unresolvable and rules
+    // en passant out entirely.
+    if (c.checkers & ~captured.bit() & ~(diag | orth) != 0) return;
 
     // Our pawns that can take on `ep` are the ones an enemy pawn standing on
     // `ep` would attack.
@@ -394,7 +465,6 @@ fn addPawnMoves(
 
 const Io = std.Io;
 const CastlingRights = board.CastlingRights;
-const Piece = board.Piece;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -662,6 +732,9 @@ fn oracleFens(buf: *[16][]const u8) []const []const u8 {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         const cut = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+        // Grow `buf` at the call sites rather than truncating here: a silently
+        // dropped position is a test that quietly stops covering something.
+        assert(n < buf.len);
         buf[n] = std.mem.trimEnd(u8, line[0..cut], " \t");
         n += 1;
     }
@@ -785,6 +858,25 @@ test "en passant is illegal when both pawns leaving the rank expose the king" {
     });
 }
 
+test "en passant is illegal when it does not answer the check" {
+    // A knight check cannot be resolved by an en passant capture at all: the
+    // knight is not the piece coming off, and no pawn landing square blocks a
+    // knight. Bypassing the evasion mask means this rule has to be restated in
+    // `generateEnPassant`, and the first version of it did not.
+    try expectMoves("4k3/8/8/3pP3/8/3n4/8/4K3 w - d6 0 1", &.{
+        "e1d1", "e1d2", "e1e2", "e1f1",
+    });
+
+    // Same shape with a rook checking along rank 1: the capture neither blocks
+    // it nor takes the checker, so it is still illegal — but that case is caught
+    // by the occupancy test rather than by the rule above. The king has only the
+    // three squares off the rank, since the rook covers all of it once the king
+    // itself stops blocking.
+    try expectMoves("4k3/8/8/3pP3/8/8/8/4K2r w - d6 0 1", &.{
+        "e1d2", "e1e2", "e1f2",
+    });
+}
+
 test "en passant answers a check by capturing the checking pawn" {
     // The pawn giving check stands on d5; the capture lands on d6. An evasion
     // mask built from the checker's square would reject the only pawn move that
@@ -831,6 +923,40 @@ test "castling needs the right, a clear path, and safe squares to cross" {
             std.debug.print("queenside, {s}: {s}\n", .{ c.note, c.fen });
             return err;
         };
+    }
+}
+
+test "positions movegen may not be handed are rejected at the parser" {
+    attacks.init();
+    for ([_][]const u8{
+        // The side that just moved left its own king attacked — movegen would
+        // generate a king capture, and the ply after that takes `lsb` of an
+        // empty king board.
+        "3k4/8/8/8/8/8/8/3RK3 w - - 0 1",
+        "8/8/8/3kK3/8/8/8/8 w - - 0 1", // adjacent kings, the same fault
+        "4k3/8/8/8/8/8/8/4K2r b - - 0 1", // black to move, white left in check
+        // En passant squares no double push can have produced: nothing to
+        // capture, the target occupied, or the pawn's origin still occupied.
+        // `makeMove` would clear an empty square and index `by_type[7]`.
+        "4k3/8/8/4P3/8/8/8/4K3 w - d6 0 1",
+        "4k3/8/3n4/3pP3/8/8/8/4K3 w - d6 0 1",
+        "4k3/3r4/8/3pP3/8/8/8/4K3 w - d6 0 1",
+        "4k3/8/8/8/3pP3/8/4B3/4K3 b - e3 0 1", // mirrored: origin e2 occupied
+    }) |fen| {
+        // `Board.fromFen` accepts them — the placement alone is well formed.
+        _ = try Board.fromFen(fen);
+        try std.testing.expectError(error.IllegalPosition, fromFen(fen));
+    }
+
+    // The legal neighbours of those, so the check cannot pass by rejecting
+    // everything: an ordinary ep position, and a position where the side *to*
+    // move is in check, which is fine.
+    for ([_][]const u8{
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+        "4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1",
+        "3k4/8/8/8/8/8/8/3RK3 b - - 0 1",
+    }) |fen| {
+        _ = try fromFen(fen);
     }
 }
 

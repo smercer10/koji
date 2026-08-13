@@ -156,7 +156,7 @@ commitment to implement it.
 - Drop the 32KB `line` table from `attacks.zig` and confine a pinned piece some other way, or drop
   the 32KB `between` table and derive the check-evasion mask from two magic lookups instead. Both
   are read only through the king's row, so 64KB of tables serve one row each per node. The Phase 1
-  baseline measured 0.1–0.15 cache misses per `generate()` call, so they are *not* currently costing
+  baseline measured ~0.1 cache misses per `generate()` call, so they are *not* currently costing
   misses and this now looks unpromising — recorded because the reasoning that motivated it was
   wrong, not because the idea is good. CPW's only data point is a single unverified forum anecdote
   about a closed engine, which is not evidence either.
