@@ -33,8 +33,10 @@ options. **Met — Phase 0 complete.**
 - [x] Bitboards + mailbox
 - [x] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [x] FEN parsing and output, tolerant of EPD records so the perft oracle parses unchanged
-- [ ] Move encoding + make/unmake — they ship together; a `Move` with no consumer is untestable
-- [ ] Zobrist hashing, fixed seed
+- [x] Move encoding + make/unmake + Zobrist, fixed seed — all three ship together. A `Move` with
+      no consumer is untestable, and before a transposition table exists Zobrist's only consumer is
+      make/unmake: splitting it out would mean a branch whose entire test surface is the previous
+      branch's code, plus a second pass threading xors back through every arm of make/unmake
 - [ ] Legal move generation: leapers, pawns, castling, check and pin legality
 - [ ] `perft` driver and `divide`, run over `testdata/perft.epd` from `test` and `test-slow`
 - [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
@@ -140,4 +142,9 @@ commitment to implement it.
 
 - Mailbox ablation: drop `Board.mailbox` and probe the type bitboards in `make()` instead;
   `/bench` perft NPS both ways. The hybrid is CPW consensus, not a measurement — all mailbox
-  access goes through `put`/`remove`/`pieceAt`, so the experiment is contained.
+  access goes through `put`/`remove`/`movePiece`/`pieceAt`, so the experiment is contained.
+- Set the en passant square only when an enemy pawn can actually capture it. koji follows standard
+  FEN and sets it after every double push, which gives two otherwise identical positions different
+  Zobrist keys and splits their transposition table entries. Node counts are unaffected either way,
+  so this is unmeasurable until a TT exists — and it costs standards-conformant FEN output, which is
+  what makes it a trade rather than a fix.
