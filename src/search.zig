@@ -1,8 +1,9 @@
-//! koji — search: negamax with alpha-beta, driven by iterative deepening.
+//! koji — search: negamax with alpha-beta, driven by iterative deepening, over a
+//! transposition table.
 //!
-//! Three ideas, and deliberately only three. Move ordering beyond "try last
-//! iteration's best move first", quiescence, and a transposition table are each
-//! their own roadmap box, and each is measured against what this file does.
+//! Deliberately nothing else. Quiescence and move ordering beyond "the table's
+//! move, then the previous iteration's best at the root" are each their own
+//! roadmap box, and each is measured against what this file does.
 //!
 //! What this file *is* responsible for is being right. Alpha-beta is supposed to
 //! return exactly the score a plain minimax returns over the same tree — it
@@ -45,6 +46,11 @@
 //         (folklore; CPW states the convention as what programs "usually" do
 //         and names no one)
 //         via https://www.chessprogramming.org/Score
+// origin: storing mate scores relative to the node rather than to the root, so
+//         one entry serves every ply the position is reached at — unclear
+//         (folklore; the CPW score page states the root-distance convention and
+//         names no one, and the table's half of it has no page at all)
+//         via https://www.chessprogramming.org/Score
 // origin: scoring the *first* repetition as a draw instead of waiting for the
 //         third — unclear (folklore; CPW says "most programs do this on the
 //         first repetition" and credits no one). Note that the same CPW page
@@ -67,6 +73,8 @@ const movegen = @import("movegen.zig");
 const MoveList = movegen.MoveList;
 
 const eval = @import("eval.zig");
+
+const tt = @import("tt.zig");
 
 pub const Score = eval.Score;
 
@@ -112,6 +120,11 @@ pub const Info = struct {
     /// millisecond, and reporting `time 0` there costs the reader the nps for
     /// that line entirely. The reporter rounds to whatever the protocol wants.
     elapsed_ns: u64,
+    /// Transposition table occupancy in permill. The only view anyone outside
+    /// the search gets of the table, and the reason it is reported at all: a
+    /// table that is never filling, or one that is full three plies in, is a
+    /// visible fault rather than a slightly worse node count.
+    hashfull: u32,
     pv: []const Move,
 };
 
@@ -135,6 +148,11 @@ pub const Searcher = struct {
     /// The game position. The search mutates it and restores it exactly, the
     /// same contract `perft` holds itself to.
     b: Board,
+
+    /// Borrowed, never owned: the table outlives any one search, `ucinewgame`
+    /// clears it from the UCI thread, and `setoption Hash` will reallocate it.
+    /// A searcher pointed at `tt.Table.off` is slower and no less correct.
+    tt: *tt.Table,
 
     /// Zobrist keys of every position from the start of the game to the current
     /// one, extended by the search path as it descends. The current position's
@@ -170,8 +188,9 @@ pub const Searcher = struct {
     /// this function assigns anyway, and `= .{}` lowers to a `memset` of all of
     /// it — the idiom that cost perft 39% of its instructions (docs/testlog.md,
     /// 2026-08-14).
-    pub fn init(s: *Searcher, io: Io) void {
+    pub fn init(s: *Searcher, io: Io, table: *tt.Table) void {
         s.io = io;
+        s.tt = table;
         s.stop_flag = .init(false);
         s.stopped = false;
         s.nodes = 0;
@@ -288,6 +307,7 @@ pub const Searcher = struct {
         s.stopped = false;
         s.start = Io.Clock.awake.now(s.io);
         s.history_len = s.root_history_len;
+        s.tt.newSearch();
 
         var root: MoveList = undefined;
         movegen.generate(&s.b, &root);
@@ -322,6 +342,7 @@ pub const Searcher = struct {
                 .score = score,
                 .nodes = s.nodes,
                 .elapsed_ns = s.elapsedNs(),
+                .hashfull = s.tt.hashfull(),
                 .pv = s.pv[0][0..s.pv_len[0]],
             });
         }
@@ -340,23 +361,57 @@ pub const Searcher = struct {
 
         // Never at the root: whatever the history says, the game is not over
         // there, and answering 0 would mean refusing to pick a move.
+        //
+        // **This stays ahead of the table probe.** A repetition is a fact about
+        // the path, not about the position, and the table only knows positions —
+        // so the rules get to answer first, and a stored score can never turn a
+        // drawn line back into a won one.
         if (ply > 0 and s.drawnByRule()) return 0;
 
         if (depth <= 0 or ply >= max_ply) return eval.evaluate(&s.b);
+
+        var alpha = alpha_in;
+        var tt_move: ?Move = null;
+
+        if (s.tt.probe(s.b.hash)) |entry| {
+            // Worth having at any depth: ordering is what a shallow entry is
+            // for, and it is the larger half of what the table buys.
+            tt_move = entry.move;
+
+            // Never at the root, which has to produce a move and a principal
+            // variation, not just a number.
+            if (ply > 0 and entry.depth >= depth) {
+                const score = scoreFromTt(entry.score, ply);
+                switch (entry.meta.bound) {
+                    .exact => return score,
+                    .lower => if (score >= beta) return score,
+                    .upper => if (score <= alpha) return score,
+                    .none => unreachable, // `probe` does not return empty entries
+                }
+            }
+        }
 
         var list: MoveList = undefined;
         movegen.generate(&s.b, &list);
         if (list.len == 0) {
             // Checkmate is scored from the mated side's view, which is the side
-            // to move here; stalemate is simply a draw.
+            // to move here; stalemate is simply a draw. Neither is stored: an
+            // entry has to carry a move, and there is none.
             return if (movegen.inCheck(&s.b)) -(mate_score - @as(Score, @intCast(ply))) else 0;
         }
-        if (ply == 0) {
+
+        if (tt_move) |m| {
+            moveToFront(&list, m);
+        } else if (ply == 0) {
+            // Only reached when the root's own entry has been evicted, which a
+            // small table under a long game does do.
             if (s.root_best) |best| moveToFront(&list, best);
         }
 
-        var alpha = alpha_in;
         var best = -infinity;
+        // Every stored entry carries a move, including a fail-low node's: the
+        // move that scored highest is still the one to try first next time.
+        var best_move = list.moves[0];
 
         for (list.slice()) |m| {
             const undo = move.makeMove(&s.b, m);
@@ -367,20 +422,34 @@ pub const Searcher = struct {
             s.history_len -= 1;
             move.unmakeMove(&s.b, m, undo);
 
+            // Nothing below this point may write to the table: `best` is a
+            // partial answer under a window the abort invalidated.
             if (s.stopped) return 0;
 
             if (score > best) {
                 best = score;
+                best_move = m;
                 if (score > alpha) {
                     alpha = score;
                     s.updatePv(ply, m);
                 }
                 // Fail-soft: the caller is told the best score actually seen,
-                // not just that the window was exceeded. Costs nothing here and
-                // is what the transposition table will want for its bounds.
+                // not merely that the window was exceeded, which is what makes
+                // the bound stored below a true statement about the position
+                // rather than one about this node's window.
                 if (alpha >= beta) break;
             }
         }
+
+        // `alpha_in`, not `alpha`: the question is whether anything beat the
+        // window the caller asked about, and `alpha` has been moving.
+        const bound: tt.Bound = if (best >= beta)
+            .lower
+        else if (best <= alpha_in)
+            .upper
+        else
+            .exact;
+        s.tt.store(s.b.hash, best_move, scoreToTt(best, ply), @intCast(depth), bound);
 
         return best;
     }
@@ -396,6 +465,31 @@ pub const Searcher = struct {
         s.pv_len[ply] = copied + 1;
     }
 };
+
+/// A mate score, going into the table, is rebased from "plies from the root" to
+/// "plies from here".
+///
+/// The table is indexed by position, and the same mating position is reached at
+/// different plies down different lines — so an entry has to say "mate in three
+/// from this square" and not "mate in three from wherever it was first seen", or
+/// the second line to reach it inherits the first line's distance. Everything
+/// outside the mate range is a static score and passes through untouched.
+fn scoreToTt(score: Score, ply: u32) i16 {
+    assert(score > -infinity and score < infinity);
+    const from_root: Score = @intCast(ply);
+    if (score >= mate_threshold) return @intCast(score + from_root);
+    if (score <= -mate_threshold) return @intCast(score - from_root);
+    return @intCast(score);
+}
+
+/// The inverse, applied on the way out of a probe.
+fn scoreFromTt(score: i16, ply: u32) Score {
+    const from_root: Score = @intCast(ply);
+    const value: Score = score;
+    if (value >= mate_threshold) return value - from_root;
+    if (value <= -mate_threshold) return value + from_root;
+    return value;
+}
 
 /// Swaps `m` to the front of `list` if it is there at all. Preserves nothing
 /// else about the order — at the root, one move ahead of an otherwise unsorted
@@ -429,7 +523,22 @@ pub fn mateDistance(score: Score) ?i32 {
 const testing = std.testing;
 const attacks = @import("attacks.zig");
 
+/// The table the tests below run against unless they say otherwise: disabled, so
+/// every probe misses and every store drops.
+///
+/// That is the right default here rather than a lazy one. Most of this file's
+/// assertions are about alpha-beta — that it returns what minimax returns, that
+/// a bound is honest, that a mate is scored by distance — and they have to keep
+/// holding for the search itself, not merely for a search whose table happened
+/// to be warm. The table's own effects get their own tests, below, and the ones
+/// that matter run against a table small enough to collide on nearly every node.
+var no_table: tt.Table = .off;
+
 fn searcher(fen: ?[]const u8) !*Searcher {
+    return searcherWith(fen, &no_table);
+}
+
+fn searcherWith(fen: ?[]const u8, table: *tt.Table) !*Searcher {
     // The sliding attack tables are runtime-initialised globals. Every test
     // that touches movegen arms them itself rather than inheriting whatever an
     // earlier test happened to leave behind — otherwise the suite passes or
@@ -440,7 +549,7 @@ fn searcher(fen: ?[]const u8) !*Searcher {
     // A rejected FEN would otherwise leak the searcher and report itself as a
     // leak rather than as the parse failure it is.
     errdefer testing.allocator.destroy(s);
-    s.init(testing.io);
+    s.init(testing.io, table);
     if (fen) |text| s.setPosition(try movegen.fromFen(text));
     return s;
 }
@@ -475,6 +584,13 @@ test "alpha-beta returns exactly the score minimax does" {
     // window bug, every mate score not adjusted for ply, every fail-soft bound
     // that claims more than it proved shows up here as a mismatch, on a fixed
     // tree, deterministically. Alpha-beta is only allowed to be faster.
+    //
+    // **It runs with the table off, and has to.** A transposition table legally
+    // breaks this equality: an entry stored by an earlier, deeper iteration is
+    // returned at a node the current depth would have searched shallowly, so a
+    // fixed-depth search with a table can return a score fixed-depth minimax
+    // does not — better information, not a bug. This test is about alpha-beta;
+    // asserting it with a table would be asserting something false.
     const cases = .{
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4 },
         // Kiwipete: castling, pins and a dense capture set.
@@ -528,9 +644,10 @@ test "a narrow window never changes which side of it the true score falls on" {
 }
 
 test "every move of the principal variation is legal" {
-    // CLAUDE.md: an illegal PV move is never cosmetic. There is no transposition
-    // table yet to collide, which is exactly why this assertion should exist
-    // before there is — so the day it fires, the TT is the only suspect.
+    // CLAUDE.md: an illegal PV move is never cosmetic. With the table off, this
+    // is the assertion the table is later measured against — see "a table small
+    // enough to collide on every node still produces a legal PV" below, which is
+    // the same check where a collision can actually happen.
     const fens = [_][]const u8{
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -796,6 +913,218 @@ test "searching the previous best move first does not change the score" {
     const without_ordering = cold.negamax(4, 0, -infinity, infinity);
 
     try testing.expectEqual(without_ordering, with_ordering);
+}
+
+// --- with the transposition table on ------------------------------------------
+
+/// Two entries, so nearly every position in a search collides with the one
+/// before it and replacement runs constantly. Any test that passes here would
+/// pass with a real table; the reverse is not true, which is the point.
+fn tinyTable() tt.Table {
+    return .{ .entries = &tiny_entries, .generation = 0 };
+}
+var tiny_entries: [2]tt.Entry align(64) = @splat(std.mem.zeroes(tt.Entry));
+
+fn realTable() !tt.Table {
+    return tt.Table.init(testing.allocator, 1);
+}
+
+test "a table small enough to collide on every node still produces a legal PV" {
+    // The invariant from CLAUDE.md, tested where it can actually break. Two
+    // slots for a whole search means the key check is the only thing standing
+    // between the ordering move and a move from an unrelated position — if it is
+    // wrong, or if the stored move is trusted without it, this fires.
+    const fens = [_][]const u8{
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+    };
+
+    var table = tinyTable();
+    table.clear();
+
+    for (fens) |fen| {
+        const s = try searcherWith(fen, &table);
+        defer testing.allocator.destroy(s);
+
+        // Depth 4, as the table-off version of this test uses: what makes this
+        // one sharp is the two slots, not the depth, and every extra ply here is
+        // paid by `zig build test` on every turn.
+        var depth: u8 = 1;
+        while (depth <= 4) : (depth += 1) {
+            const result = s.search(.{ .depth = depth }, null);
+            const pv = s.pv[0][0..s.pv_len[0]];
+            try testing.expect(pv.len > 0);
+            try testing.expectEqual(result.move.?, pv[0]);
+
+            // Replay it, checking each move against the legal list of the
+            // position it is actually played in, then rewind.
+            var played: usize = 0;
+            var undos: [max_ply]move.Undo = undefined;
+            for (pv) |m| {
+                var list: MoveList = undefined;
+                movegen.generate(&s.b, &list);
+
+                var legal = false;
+                for (list.slice()) |candidate| {
+                    if (@as(u16, @bitCast(candidate)) == @as(u16, @bitCast(m))) legal = true;
+                }
+                testing.expect(legal) catch |err| {
+                    std.debug.print(
+                        "illegal PV move {f} at ply {d}, depth {d}, in {s}\n",
+                        .{ m, played, depth, fen },
+                    );
+                    return err;
+                };
+
+                undos[played] = move.makeMove(&s.b, m);
+                played += 1;
+            }
+            while (played > 0) {
+                played -= 1;
+                move.unmakeMove(&s.b, pv[played], undos[played]);
+            }
+        }
+    }
+}
+
+test "the table is used, and searching with one costs fewer nodes" {
+    // The test that fires if the table is wired up but never actually hit — a
+    // probe that always misses breaks nothing else in this file.
+    const fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
+    const without = try searcher(fen);
+    defer testing.allocator.destroy(without);
+    const cold = without.search(.{ .depth = 5 }, null);
+
+    var table = try realTable();
+    defer table.deinit(testing.allocator);
+    const with = try searcherWith(fen, &table);
+    defer testing.allocator.destroy(with);
+    const warm = with.search(.{ .depth = 5 }, null);
+
+    try testing.expect(warm.nodes < cold.nodes);
+    try testing.expect(table.hashfull() > 0);
+}
+
+test "a mate is still scored by its distance with the table on" {
+    // Where a missing ply adjustment shows up. A mate score stored at ply 4 and
+    // read back at ply 1 is three plies further away than it really is, which
+    // reaches the GUI as a wrong `mate <n>` and the search as a preference for
+    // the slower mate.
+    var table = try realTable();
+    defer table.deinit(testing.allocator);
+
+    const white = try searcherWith("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", &table);
+    defer testing.allocator.destroy(white);
+    // From 2, which is the shallowest depth that sees the mate at all: a
+    // depth-1 child is a leaf and answers with `evaluate` before it ever asks
+    // whether the side to move has a move. Every iteration after the first reads
+    // the mate back out of the table instead of re-deriving it, which is exactly
+    // the path the ply adjustment has to survive.
+    var depth: u8 = 2;
+    while (depth <= 6) : (depth += 1) {
+        const result = white.search(.{ .depth = depth }, null);
+        try testing.expectEqual(mate_score - 1, result.score);
+        try testing.expectEqual(@as(?i32, 1), mateDistance(result.score));
+    }
+
+    const black = try searcherWith("r5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1", &table);
+    defer testing.allocator.destroy(black);
+    try testing.expectEqual(mate_score - 1, black.search(.{ .depth = 4 }, null).score);
+
+    // The losing side of the same position: a slower loss must still score
+    // higher than a faster one when both come back through the table.
+    const mated = try searcherWith("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", &table);
+    defer testing.allocator.destroy(mated);
+    const fast = mated.search(.{ .depth = 4 }, null).score;
+
+    const slower = try searcherWith("6k1/5ppp/8/8/8/7P/5PP1/R5K1 w - - 0 1", &table);
+    defer testing.allocator.destroy(slower);
+    const slow = slower.search(.{ .depth = 4 }, null).score;
+
+    try testing.expect(fast >= mate_threshold);
+    try testing.expect(fast >= slow);
+}
+
+test "a mate score survives a round trip through the table at any ply" {
+    // The conversion on its own, away from the search: rebasing to the node and
+    // back must be the identity, and a static score must not be touched at all.
+    var ply: u32 = 0;
+    while (ply < max_ply) : (ply += 1) {
+        const from_root: Score = @intCast(ply);
+        for ([_]Score{ mate_score, mate_score - 1, mate_threshold }) |mate| {
+            // A mate this far from the root is only representable below it.
+            if (mate - from_root < mate_threshold) continue;
+            const score = mate - from_root;
+            try testing.expectEqual(score, scoreFromTt(scoreToTt(score, ply), ply));
+            try testing.expectEqual(-score, scoreFromTt(scoreToTt(-score, ply), ply));
+        }
+        for ([_]Score{ 0, 1, -1, 900, -900, mate_threshold - 1 }) |score| {
+            try testing.expectEqual(score, scoreToTt(score, ply));
+            try testing.expectEqual(score, scoreFromTt(@intCast(score), ply));
+        }
+    }
+
+    // ...and the rebasing is what makes one entry serve two depths: the same
+    // mate seen three plies deeper is the same stored number.
+    try testing.expectEqual(scoreToTt(mate_score - 1, 1), scoreToTt(mate_score - 4, 4));
+}
+
+test "the draw rules still outrank the table" {
+    // The graph-history-interaction guard. A repetition is a property of the
+    // path, so a score stored for the position from a line that could not repeat
+    // must never be able to claim the draw away.
+    var table = try realTable();
+    defer table.deinit(testing.allocator);
+
+    const s = try searcherWith("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR w Kkq - 0 1", &table);
+    defer testing.allocator.destroy(s);
+
+    // Warm the table on this position *before* the repetition exists, so the
+    // entries the final search probes were written when playing on was still
+    // worth about a rook down rather than worth 0.
+    _ = s.search(.{ .depth = 4 }, null);
+
+    for ([_][]const u8{ "g1f3", "g8f6", "f3g1", "f6g8" }) |text| {
+        s.playMove(move.Move.fromUci(&s.b, text).?);
+    }
+
+    const result = s.search(.{ .depth = 2 }, null);
+    try testing.expectEqual(@as(Score, 0), result.score);
+    s.playMove(result.move.?);
+    try testing.expect(s.repeated());
+
+    // The fifty-move rule, same argument: the clock is not in the Zobrist key,
+    // so two positions one move apart on it share an entry.
+    const drawn = try searcherWith("7k/8/8/8/8/8/r7/6K1 w - - 99 60", &table);
+    defer testing.allocator.destroy(drawn);
+    try testing.expectEqual(@as(Score, 0), drawn.search(.{ .depth = 4 }, null).score);
+}
+
+test "a search with the table is deterministic from a cleared one" {
+    // `bench` clears between positions for exactly this reason: with the table
+    // carried over, a search depends on every search before it. From a cleared
+    // table the same position must cost the same nodes every time, or the
+    // `Bench:` line in a commit message means nothing.
+    var table = try realTable();
+    defer table.deinit(testing.allocator);
+
+    const s = try searcherWith(
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        &table,
+    );
+    defer testing.allocator.destroy(s);
+
+    table.clear();
+    const first = s.search(.{ .depth = 5 }, null);
+    table.clear();
+    const second = s.search(.{ .depth = 5 }, null);
+
+    try testing.expectEqual(first.nodes, second.nodes);
+    try testing.expectEqual(first.score, second.score);
+    try testing.expectEqual(first.move.?, second.move.?);
 }
 
 test "mate distances convert to the shape UCI asks for" {

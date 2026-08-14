@@ -26,6 +26,7 @@ const perft_mod = @import("perft.zig");
 const move_mod = @import("move.zig");
 const Move = move_mod.Move;
 const search = @import("search.zig");
+const tt = @import("tt.zig");
 
 /// Bumped per release; reported by `uci` and `--version`.
 const version = "0.0.0";
@@ -106,13 +107,24 @@ fn bench(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
 fn runBench(io: Io, allocator: std.mem.Allocator, out: *Io.Writer, depth: u8) !void {
     const s = try allocator.create(search.Searcher);
     defer allocator.destroy(s);
-    s.init(io);
+
+    // Always `default_hash_mb`, never whatever `Hash` was set to: the table size
+    // decides how much of the tree is remembered, so a bench that inherited it
+    // would print a different number on the same binary.
+    var table: tt.Table = try .init(allocator, default_hash_mb);
+    defer table.deinit(allocator);
+    s.init(io, &table);
 
     var nodes: u64 = 0;
     const start = Io.Clock.awake.now(io);
 
     var positions = benchPositions();
     while (positions.next()) |fen| {
+        // Cleared between positions, so each one's node count is a function of
+        // that position alone: the bench stays a sum of independent numbers, and
+        // a regression can be attributed to the position that shows it rather
+        // than to the one that happened to run before it.
+        table.clear();
         // A malformed line here is a broken build, not a bad input: the file is
         // embedded at compile time and a test asserts every line parses.
         const b = movegen.fromFen(fen) catch |err| {
@@ -260,6 +272,14 @@ fn epdCommand(io: Io, arena: std.mem.Allocator, out: *Io.Writer, args: []const [
 /// not to think about.
 const line_buffer_bytes = 1 << 20;
 
+/// Transposition table size, in megabytes. One constant for the value `uci`
+/// advertises as `Hash`'s default, the size the table is actually allocated at,
+/// and the size `bench` runs with — a bench measured against a table of one size
+/// and advertised as another is the kind of mismatch nobody thinks to check.
+///
+/// `setoption name Hash` does not change it yet (ROADMAP Phase 2).
+const default_hash_mb = 16;
+
 /// Depth used when `go` names no limit this engine understands. A GUI at a real
 /// time control sends `wtime`/`btime`, which koji parses and ignores until the
 /// time-management box lands (ROADMAP Phase 2) — so this is what stands in for
@@ -305,7 +325,12 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
     const in = &stdin_file.interface;
 
     const searcher = try arena.create(search.Searcher);
-    searcher.init(io);
+    // From the arena, and so never freed: it lives for the whole process, and
+    // the one thing that will want to reallocate it — `setoption name Hash` —
+    // has to hand back the old table when it does, which is the moment to give
+    // this its own allocator rather than now.
+    var table: tt.Table = try .init(arena, default_hash_mb);
+    searcher.init(io, &table);
 
     var engine: Engine = .{ .io = io, .searcher = searcher, .out = out };
     // A search still running when stdin ends would outlive the loop and write to
@@ -343,6 +368,10 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
             engine.say("readyok\n");
         } else if (eql(token, "ucinewgame")) {
             engine.joinSearch();
+            // Joined first: the table belongs to whichever thread is running,
+            // and clearing it under a live search would be a data race as well
+            // as nonsense.
+            table.clear();
             searcher.setPosition(Board.startpos);
         } else if (eql(token, "position")) {
             engine.joinSearch();
@@ -499,7 +528,8 @@ fn emitInfo(ctx: *anyopaque, info: search.Info) void {
     e.out.flush() catch {};
 }
 
-/// `info depth <d> score cp <x>|mate <n> nodes <n> nps <n> time <ms> pv <moves>`.
+/// `info depth <d> score cp <x>|mate <n> nodes <n> nps <n> hashfull <permill>
+/// time <ms> pv <moves>`.
 fn writeInfo(w: *Io.Writer, info: search.Info) Io.Writer.Error!void {
     try w.print("info depth {d} score ", .{info.depth});
     if (search.mateDistance(info.score)) |moves| {
@@ -513,7 +543,12 @@ fn writeInfo(w: *Io.Writer, info: search.Info) Io.Writer.Error!void {
     else
         0;
     const time_ms = info.elapsed_ns / std.time.ns_per_ms;
-    try w.print(" nodes {d} nps {d} time {d} pv", .{ info.nodes, nps, time_ms });
+    try w.print(" nodes {d} nps {d} hashfull {d} time {d} pv", .{
+        info.nodes,
+        nps,
+        info.hashfull,
+        time_ms,
+    });
     for (info.pv) |m| try w.print(" {f}", .{m});
     try w.writeByte('\n');
 }
@@ -527,7 +562,7 @@ fn identify(out: *Io.Writer) Io.Writer.Error!void {
     try out.writeAll("id author koji contributors\n");
 
     // Hash and Threads are mandatory for OpenBench and expected by every GUI.
-    try out.writeAll("option name Hash type spin default 16 min 1 max 65536\n");
+    try out.print("option name Hash type spin default {d} min 1 max 65536\n", .{default_hash_mb});
     try out.writeAll("option name Threads type spin default 1 min 1 max 256\n");
 
     // Tuning knobs appear only in a -Dtunables build. A release must advertise
@@ -556,6 +591,7 @@ test {
     _ = @import("movegen.zig");
     _ = @import("perft.zig");
     _ = @import("eval.zig");
+    _ = @import("tt.zig");
     _ = @import("search.zig");
 }
 
@@ -633,10 +669,11 @@ test "info lines carry a score the protocol understands" {
         .score = -34,
         .nodes = 1000,
         .elapsed_ns = 2 * std.time.ns_per_ms,
+        .hashfull = 128,
         .pv = &.{},
     });
     try std.testing.expectEqualStrings(
-        "info depth 7 score cp -34 nodes 1000 nps 500000 time 2 pv\n",
+        "info depth 7 score cp -34 nodes 1000 nps 500000 hashfull 128 time 2 pv\n",
         w.buffered(),
     );
 
@@ -648,6 +685,7 @@ test "info lines carry a score the protocol understands" {
         .score = search.mate_score - 1,
         .nodes = 10,
         .elapsed_ns = 0,
+        .hashfull = 0,
         .pv = &.{},
     });
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), " score mate 1 ") != null);
@@ -657,7 +695,9 @@ test "position replays a game and refuses a move that is not legal" {
     attacks.init();
     const s = try std.testing.allocator.create(search.Searcher);
     defer std.testing.allocator.destroy(s);
-    s.init(std.testing.io);
+    // No table: `setPosition` never searches, so there is nothing to remember.
+    var no_table: tt.Table = .off;
+    s.init(std.testing.io, &no_table);
 
     var good = std.mem.tokenizeAny(u8, "startpos moves e2e4 e7e5 g1f3", " \t");
     try std.testing.expect(setPosition(s, &good));
@@ -685,7 +725,9 @@ test "a rejected position leaves the board alone and says so" {
     attacks.init();
     const s = try std.testing.allocator.create(search.Searcher);
     defer std.testing.allocator.destroy(s);
-    s.init(std.testing.io);
+    // No table: `setPosition` never searches, so there is nothing to remember.
+    var no_table: tt.Table = .off;
+    s.init(std.testing.io, &no_table);
 
     var start = std.mem.tokenizeAny(u8, "startpos moves d2d4", " \t");
     try std.testing.expect(setPosition(s, &start));

@@ -171,3 +171,65 @@ implementation site — restating them here is how this file stops being worth r
             return exactly the score a plain minimax returns over the same tree), deep perft, and
             12 full self-play games at depth 5 through fastchess: all terminated normally, no
             illegal move, no crash, no hang.
+
+### 2026-08-14 — Transposition table: 16MB, direct-mapped, full 64-bit key
+- branch:   feat/tt
+- type:     bench (SPRT pending — no opening book on this machine yet)
+- result:   **-68.7% nodes at fixed depth, 2.19x wall clock**
+- bench:    22088265 (was 70586607)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions,
+            `perf stat -r 5`:
+
+                                        before          after      change
+              nodes               70,586,607     22,088,265      -68.7%
+              instructions    32,117,721,351 10,568,479,095      -67.1%
+              cycles          10,285,454,822  4,513,925,812      -56.1%
+              wall clock             2.231 s        1.018 s      -54.4%
+              Mnps                      31.6           21.7      -31.3%
+
+              instructions / node        455            478       +5.2%
+              cycles / node            141.4          204.4      +44.6%
+              IPC                       3.22           2.34
+              branch misses / node     0.394          0.541      +37.3%
+              cache misses / node     0.0238         0.3084       x12.9
+
+            Ten runs each; node counts identical every run, instructions +/-0.00%, wall clock
+            +/-1.6%. **The node count is what moved and the per-node cost got worse** — a probe is
+            a cache miss roughly every third node, which is the table being paid for. Reading the
+            two columns as one number would say "2.19x faster"; the honest version is that the
+            search does 3.2x less work and each unit of it costs 45% more cycles.
+
+            Nps *falling* is expected here and is not a regression to chase: the nodes that
+            remain are the expensive ones. It does mean nps has stopped being comparable across
+            this commit, and only nodes-to-depth is.
+
+            Bench invariant checked, not assumed: `-Dcpu=x86_64` — no AVX2, magics instead of
+            PEXT — gives the same 22,088,265 nodes at 20.8-21.0 Mnps.
+
+            **The depth-6 bench understates this badly.** Startpos, nodes to reach each depth:
+
+              depth       base         with TT     ratio
+                  5     35,531          26,088      1.36
+                  6    280,302         213,714      1.31
+                  7  1,583,174         730,972      2.17
+                  8 22,970,811       3,892,588      5.90
+                  9 98,149,412      15,492,824      6.34
+
+            The table is worth ~1.3x at the depth the bench runs at and ~6x three plies later,
+            because transpositions are what deepens: 6.34x at depth 9 against 1.00x at depth 3.
+            Effective branching factor at 8->9 falls 4.27 -> 3.98, and at 7->8 14.5 -> 5.3. So
+            the next `Bench:` numbers should be read knowing the instrument is calibrated well
+            below where the engine actually plays, and raising `bench_depth` once ordering lands
+            will make it a better predictor of Elo, not merely a bigger number.
+
+            Entry is 16 bytes with the **whole** Zobrist key rather than the usual 8 with a 16-bit
+            one. At 2^20 entries a 16-bit key verifies ~36 bits, so ~1 probe in 65k that lands on
+            an occupied slot returns another position's entry — order 10^3 per bench, absorbed
+            elsewhere by validating the move for pseudo-legality before playing it, which koji
+            has no function for. Halving the entry is filed in ROADMAP as its own experiment; it
+            needs that function first, and the function is the risk, not the packing.
+
+            Not yet an SPRT: no opening book has ever been fetched on this machine, and without
+            one every game from the start position is the same game. The strength claim is
+            therefore still open — this entry is the speed and shape of the change, not its Elo.
