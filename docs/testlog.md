@@ -224,3 +224,50 @@ implementation site — restating them here is how this file stops being worth r
             player: 16/16 bench positions give an identical `bestmove` at `go depth 6`. Those games
             were measuring time forfeits — 7 of the first 101 ended on the clock, which the faster
             side loses fewer of. **Nothing is SPRT-measurable here until a `go` spends the clock.**
+
+### 2026-08-14 — A `go wtime/btime` budget: soft and hard deadlines
+- branch:   feat/clock
+- type:     bench + forfeit check
+- result:   bench-neutral; 240 games, **zero time forfeits**
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- bench:    22088265 (unchanged)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    No SPRT, and deliberately. Against `main` this would restage the failure recorded
+            directly above: a clock-aware binary against a fixed-depth-6 one at 8+0.08 measures
+            which side flags, not which plays better. What this branch is worth cannot be read off
+            a match with the version that preceded it — it is what makes the *next* box measurable.
+
+            Bench is the gate instead, and it is exact rather than close: 22,088,265 nodes, the same
+            figure as the entry above, on both the PEXT and the `-Dcpu=x86_64` magic build. No clock
+            is set during `bench`, so both deadlines stay null and the search path is unchanged; any
+            movement in that number would have meant the budget leaking into the unclocked path.
+            nps 20.1-22.2M, unchanged within WSL2's ~5% floor.
+
+            Forfeit check, 240 self-play games (200, then 40 re-run on the final binary after two
+            comments and a parse refactor landed), concurrency 14 on an otherwise idle machine.
+            Every game terminated `normal`: 157 mates, 27 threefold, 12 insufficient material, 4
+            fifty-move. Elo -15.65 +/- 37.55 is a binary against itself and says only that the
+            harness is wired up.
+
+            Move times over 32,675 moves, which is the number that matters here:
+
+              mean                      0.172 s
+              p50                       0.112 s
+              p95                       0.518 s
+              p99                       0.951 s
+              max                       1.434 s
+              moves over 1.5 s                0
+
+            Against an 8 s starting clock the worst single move took 1.43 s, so nothing came near
+            flagging. The hard limit at a full clock is 1.34 s and 57 moves exceeded it: that is the
+            design working rather than a leak, since the increment can carry the clock above 8 s
+            early and the hard check only fires every `check_interval` nodes. A p50 of 0.112 s
+            against an 0.08 s increment says the clock drains slowly, which is what keeps the budget
+            shrinking as a game goes on.
+
+            One number to revisit: the soft limit declines the next iteration once elapsed time
+            passes half of it, which assumes that iteration costs at least as much as everything
+            spent so far. At an effective branching factor of 5.7 (entry above) that assumption is
+            conservative, and move ordering will change the branching factor it is guessing about.
+            Re-measure then.

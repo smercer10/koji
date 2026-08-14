@@ -55,8 +55,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
       `bench`
 - [x] Transposition table
-- [ ] A minimal `go wtime/btime` budget — first, because until a `go` uses the clock no change
-      below it is SPRT-measurable (`docs/testlog.md`, 2026-08-14). Real time management is Phase 3
+- [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
@@ -86,7 +85,8 @@ complete game on Lichess.
 - [ ] Futility pruning / LMP
 - [ ] Singular extensions
 - [ ] Correction history
-- [ ] Time management
+- [ ] Time management — best-move stability and score-instability scaling on Phase 2's budget,
+      and `Move Overhead` as a UCI option
 
 **Exit criterion:** ~2600–2800. **Every merge from here on is SPRT-gated**, and `docs/testlog.md`
 becomes the project's real changelog.
