@@ -230,6 +230,39 @@ implementation site — restating them here is how this file stops being worth r
             has no function for. Halving the entry is filed in ROADMAP as its own experiment; it
             needs that function first, and the function is the risk, not the packing.
 
-            Not yet an SPRT: no opening book has ever been fetched on this machine, and without
-            one every game from the start position is the same game. The strength claim is
-            therefore still open — this entry is the speed and shape of the change, not its Elo.
+            **The strength claim is open, and cannot be closed yet** — see the entry below.
+
+### 2026-08-14 — SPRT is not yet a usable instrument for this engine
+- branch:   feat/tt
+- type:     SPRT — **abandoned as invalid**, not failed
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd (sha256 7a7f6470...de35644a, matches the OpenBench manifest)
+- result:   inconclusive by construction — stopped after 90 games
+- LLR:      0.24 (8.1%) (-2.94, 2.94)
+- Elo:      +42.68 +/- 43.90
+- games:    90 (29-18-43)
+- bench:    22088265
+- notes:    Stopped on purpose. koji parses `wtime`/`btime` and ignores them, searching a fixed
+            `default_depth = 6` whatever the clock says — so at a time control the two binaries
+            are **the same player**: all 16 bench positions, `go depth 6`, both binaries, 16/16
+            identical `bestmove`. A transposition table changes how fast a depth is reached, and
+            koji has no mechanism that converts speed into depth.
+
+            What the 90 games were actually measuring was time forfeits: 7 of the first 101
+            games ended on the clock, and the fast side loses fewer. That is a real effect at
+            this TC and it is why the LLR was drifting positive, but attributing it to the table
+            would be wrong twice over — wrong mechanism, and it *understates* the change, since
+            the 6.3x node reduction at depth 9 buys nothing at all until the search is allowed to
+            use it.
+
+            **This generalises past this branch.** Any Elo-affecting change measured before
+            `go wtime/btime` lands gets the same answer, and Phase 3 opens with "every merge from
+            here on is SPRT-gated" — which is not achievable in the roadmap's current order.
+            Quiescence, move ordering and PSQT all sit ahead of time management today, and each
+            would be merged on the same unmeasurable footing this one is. The instrument comes
+            first. ROADMAP carries the dependency.
+
+            Everything the harness itself needed does work and is now set up: fastchess alpha
+            1.8.2, the book fetched and checksum-verified, 14 of 16 threads, `-repeat -recover`.
+            The next SPRT does not have to rebuild any of that.
