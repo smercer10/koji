@@ -35,8 +35,27 @@ number — leave two threads spare so the engines are not fighting the harness f
 CONCURRENCY=$(( $(nproc) - 2 ))
 ```
 
-Use an UHO-style opening book, the OpenBench default. **Verify the exact book filename when fetching
-it**; books are gitignored.
+## The book
+
+`UHO_Lichess_4852_v1.epd`, the OpenBench default. Books are gitignored — 175MB extracted — so this
+is a fetch, not a checkout:
+
+```
+git clone --filter=blob:none --sparse --depth 1 \
+  https://github.com/AndyGrant/openbench-books.git tools/openbench-books
+git -C tools/openbench-books sparse-checkout set --no-cone '/UHO_Lichess_4852_v1.epd.zip'
+mkdir -p books && cd books && python3 -c "import zipfile; \
+  zipfile.ZipFile('../tools/openbench-books/UHO_Lichess_4852_v1.epd.zip').extractall('.')"
+sha256sum books/UHO_Lichess_4852_v1.epd
+# 7a7f6470615a69c6cf23d565417701d38732876f480af90d67b42abade35644a
+```
+
+The sha is OpenBench's own (`Books/*.json` in `AndyGrant/OpenBench`) and checksums the **extracted**
+`.epd`, not the zip — a truncated book is a silently worse SPRT, not an error.
+
+Clone rather than fetch the URL in that manifest: `guard.sh` blocks raw-file and `contents/` reads
+and leaves repository roots alone so shared tools stay reachable. The books repo is data only — no
+engine source, and no declared licence, so nothing from it is vendored or credited.
 
 fastchess is built from source into `tools/fastchess/` (gitignored — it is a tool, not a dependency).
 
@@ -45,7 +64,7 @@ fastchess is built from source into `tools/fastchess/` (gitignored — it is a t
   -engine cmd=/tmp/koji-test name=test \
   -engine cmd=/tmp/koji-base name=base \
   -each tc=8+0.08 -rounds 25000 -repeat -recover -concurrency $CONCURRENCY \
-  -openings file=books/<book>.epd format=epd order=random \
+  -openings file=books/UHO_Lichess_4852_v1.epd format=epd order=random \
   -sprt elo0=0 elo1=5 alpha=0.05 beta=0.05
 ```
 
