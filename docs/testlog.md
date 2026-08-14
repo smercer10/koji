@@ -147,3 +147,41 @@ implementation site — restating them here is how this file stops being worth r
             Cost of the other fix: `fullmove` moved into `Undo` so the now-saturating increment is
             reversible, measured at **+0.54%** instructions on its own, and `@sizeOf(Undo)` is
             still 16 — it landed in padding the struct already had. A test pins that size.
+
+### 2026-08-14 — Test gates: what the suite was not checking
+- branch:   fix/test-gates
+- type:     correctness (no measured behaviour change)
+- result:   PASS — Debug invariant run reaches `consistent()` for the first time and holds
+- bench:    0 (stub — no search exists yet)
+- machine:  Zen 3, WSL2, ReleaseSafe and Debug
+- notes:    Second branch out of the Phase 1 review. Nothing here changes what the engine does;
+            all of it changes what the tests can notice.
+
+            The one worth recording: `test_optimize` was hardcoded `.ReleaseSafe` while
+            `-Doptimize` was wired only to the exe, so `zig build test -Doptimize=Debug` accepted
+            the flag, ignored it, and returned in 0.5s looking like a fast pass — it was a cache
+            hit on the identical binary. That made the `if (builtin.mode == .Debug)
+            assert(b.consistent())` in make/unmake dead code in **every build the project could
+            produce**, so the board-representation invariant `board.zig` documents as checked on
+            every move was checked on no move. Wired up and run: **`zig build test
+            -Doptimize=Debug` is green in 3.0s**, so the invariant holds at every make/unmake the
+            suite performs — no bug, but it was unfalsifiable until now.
+
+            `test-slow` could report success having run zero deep perfts: with an unlimited
+            budget `expectEqual(0, result.skipped)` is true by construction, nothing bounded
+            `ran`, and two `catch continue`s dropped an unparsable count without touching any
+            counter. Reproduced by rewriting only the D4/D5/D6 counts with thousands separators —
+            green in 19s, every deep count silently discarded. It now asserts `ran == 35` and
+            `nodes == 16,270,939,707`, which is the assertion that makes the run mean something.
+
+            The node budget also bounded nothing, since it reads the count the *record* claims: a
+            mistyped `;D6 1` passed a 100k budget and then ran 119,060,324 nodes inside the gate
+            the Stop hook runs every turn. Capped by depth as well as by claimed nodes.
+
+            Two cost checks, since both new walks land in the turn gate: the hash-and-mailbox
+            invariant walk (depth 3 over the six oracle positions, ~270k nodes, checking
+            `computeHash()` and `consistent()` at every one) leaves the gate at **0.48s warm**,
+            unchanged; at depth 4 under `slow` it leaves `test-slow` at 1m50s against 1m47s
+            before, inside run-to-run spread. `zig build` now gates `test` too, after `zig build
+            test` was observed green while `main.zig` did not compile — a test build's root is the
+            test runner, so Zig never analyses what only `main` reaches. Warm cost 0.03s.

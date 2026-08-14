@@ -755,6 +755,10 @@ fn oracleFens(buf: *[16][]const u8) []const []const u8 {
         buf[n] = std.mem.trimEnd(u8, line[0..cut], " \t");
         n += 1;
     }
+    // The other end of the same rule. Both callers iterate what this returns, so
+    // an empty embed makes them loop zero times and pass green having compared
+    // nothing — the extreme case of the silent drop guarded against above.
+    assert(n > 0);
     return buf[0..n];
 }
 
