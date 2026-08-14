@@ -55,18 +55,16 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
       `bench`
 - [x] Transposition table
+- [ ] A minimal `go wtime/btime` budget — the clock is currently parsed and ignored, and a fixed
+      depth searched instead. Real time management stays in Phase 3. **First, because it is the
+      instrument every box below it is measured with**: while every `go` searches the same fixed
+      depth, two builds differing only in search speed are the same player, and the transposition
+      table proved it — -68.7% bench, and an identical move in 16 of 16 bench positions
+      (`docs/testlog.md`, 2026-08-14)
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
-- [ ] A minimal `go wtime/btime` budget — the clock is currently parsed and ignored, and a fixed
-      depth searched instead. Real time management stays in Phase 3.
-      **This blocks measurement of everything above it, and should probably move to the front of
-      the phase.** While every `go` searches the same fixed depth, two builds that differ only in
-      search speed are the same player: the transposition table changed the bench by -68.7% and
-      still chose an identical move in 16 of 16 bench positions, so its SPRT measured time
-      forfeits and nothing else (`docs/testlog.md`, 2026-08-14). Quiescence, ordering and PSQT
-      each face the same wall, and Phase 3 opens by declaring every merge SPRT-gated
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
