@@ -119,10 +119,23 @@ Bash)
         block "Blocked: merging is the human's call, not an agent's." \
           "Open the PR and stop there; CLAUDE.md's Workflow is explicit about this."
       if [[ "$seg" =~ ^git[[:space:]]+push([[:space:]]|$) ]]; then
-        branch="$(git -C "${CLAUDE_PROJECT_DIR:-.}" branch --show-current 2>/dev/null)"
-        [[ "$seg" =~ [[:space:]](main|master)([[:space:]]|:|$) || "$branch" == "main" || "$branch" == "master" ]] &&
+        [[ "$seg" =~ [[:space:]](main|master)([[:space:]]|:|$) ]] &&
           block "Blocked: pushing to main. Work lands there by squash-merge, by a human." \
             "Push the feature branch and open a PR instead."
+
+        # The checkout's own branch decides only for the forms that push it: a
+        # bare push, `git push <remote>`, or an explicit HEAD. Consulting it for
+        # every push refused `git push -u origin <feature>` run from main, which
+        # pushes the feature branch and not main -- and that wrong block reached
+        # main, because these vectors had only ever run from a feature branch.
+        refspecs="$(sed -E 's/^git[[:space:]]+push//' <<<"$seg" |
+          tr -s '[:space:]' '\n' | grep -cE '^[^-]' || true)"
+        if ((refspecs <= 1)) || [[ "$seg" =~ [[:space:]]HEAD([[:space:]]|:|$) ]]; then
+          branch="$(git -C "${CLAUDE_PROJECT_DIR:-.}" branch --show-current 2>/dev/null)"
+          [[ "$branch" == "main" || "$branch" == "master" ]] &&
+            block "Blocked: that pushes main, which is where work lands by squash-merge, by a human." \
+              "Push the feature branch and open a PR instead."
+        fi
       fi
       ;;
     gh)
