@@ -55,12 +55,8 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
       `bench`
 - [x] Transposition table
-- [ ] A minimal `go wtime/btime` budget — the clock is currently parsed and ignored, and a fixed
-      depth searched instead. Real time management stays in Phase 3. **First, because it is the
-      instrument every box below it is measured with**: while every `go` searches the same fixed
-      depth, two builds differing only in search speed are the same player, and the transposition
-      table proved it — -68.7% bench, and an identical move in 16 of 16 bench positions
-      (`docs/testlog.md`, 2026-08-14)
+- [ ] A minimal `go wtime/btime` budget — first, because until a `go` uses the clock no change
+      below it is SPRT-measurable (`docs/testlog.md`, 2026-08-14). Real time management is Phase 3
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
@@ -169,12 +165,8 @@ commitment to implement it.
   Zobrist keys and splits their transposition table entries. Now measurable — the table landed
   2026-08-14 — and it costs standards-conformant FEN output, which is what makes it a trade rather
   than a fix.
-- Four entries to a cache line instead of one, replacing the worst of the four. The table is
-  direct-mapped, so a probe already fetches a whole line and uses 16 bytes of it; a bucket spends
-  three in-cache comparisons to raise the hit rate on traffic already paid for. CPW attributes the
-  scheme (Beal and Smith, 1996; the two-tier variant to Thompson and Condon).
-- Halve the entry to 8 bytes — a 16-bit key instead of 64 — and validate the table's move for
-  pseudo-legality before playing it. Twice the entries in the same memory, against roughly a
-  thousand wrong-position hits per bench that the validation has to catch. Needs a
-  `isPseudoLegal(*Board, Move)` that does not exist yet, and that function is the risk, not the
-  packing (`src/tt.zig` states the arithmetic).
+- Four transposition table entries to a cache line instead of one, replacing the worst of the four.
+  A probe already fetches the whole line and uses 16 bytes of it.
+- Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
+  playing it. Twice the entries in the same memory, against the wrong-position hits the check has to
+  catch. `isPseudoLegal` does not exist yet and is the risk, not the packing.

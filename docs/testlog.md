@@ -174,12 +174,12 @@ implementation site — restating them here is how this file stops being worth r
 
 ### 2026-08-14 — Transposition table: 16MB, direct-mapped, full 64-bit key
 - branch:   feat/tt
-- type:     bench (SPRT pending — no opening book on this machine yet)
+- type:     bench
 - result:   **-68.7% nodes at fixed depth, 2.19x wall clock**
 - bench:    22088265 (was 70586607)
 - machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
 - notes:    `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions,
-            `perf stat -r 5`:
+            `perf stat -r 5`, ten runs each:
 
                                         before          after      change
               nodes               70,586,607     22,088,265      -68.7%
@@ -194,15 +194,11 @@ implementation site — restating them here is how this file stops being worth r
               branch misses / node     0.394          0.541      +37.3%
               cache misses / node     0.0238         0.3084       x12.9
 
-            Ten runs each; node counts identical every run, instructions +/-0.00%, wall clock
-            +/-1.6%. **The node count is what moved and the per-node cost got worse** — a probe is
-            a cache miss roughly every third node, which is the table being paid for. Reading the
-            two columns as one number would say "2.19x faster"; the honest version is that the
-            search does 3.2x less work and each unit of it costs 45% more cycles.
-
-            Nps *falling* is expected here and is not a regression to chase: the nodes that
-            remain are the expensive ones. It does mean nps has stopped being comparable across
-            this commit, and only nodes-to-depth is.
+            Node counts identical every run, instructions +/-0.00%, wall clock +/-1.6%. The node
+            count is what moved and the per-node cost got worse: 3.2x less work at 45% more cycles
+            each, a probe costing a cache miss roughly every third node. Nps falling is therefore
+            expected rather than a regression to chase — and it means nps is no longer comparable
+            across this commit, only nodes-to-depth is.
 
             Bench invariant checked, not assumed: `-Dcpu=x86_64` — no AVX2, magics instead of
             PEXT — gives the same 22,088,265 nodes at 20.8-21.0 Mnps.
@@ -216,19 +212,10 @@ implementation site — restating them here is how this file stops being worth r
                   8 22,970,811       3,892,588      5.90
                   9 98,149,412      15,492,824      6.34
 
-            The table is worth ~1.3x at the depth the bench runs at and ~6x three plies later,
-            because transpositions are what deepens: 6.34x at depth 9 against 1.00x at depth 3.
-            Effective branching factor at 8->9 falls 4.27 -> 3.98, and at 7->8 14.5 -> 5.3. So
-            the next `Bench:` numbers should be read knowing the instrument is calibrated well
-            below where the engine actually plays, and raising `bench_depth` once ordering lands
-            will make it a better predictor of Elo, not merely a bigger number.
-
-            Entry is 16 bytes with the **whole** Zobrist key rather than the usual 8 with a 16-bit
-            one. At 2^20 entries a 16-bit key verifies ~36 bits, so ~1 probe in 65k that lands on
-            an occupied slot returns another position's entry — order 10^3 per bench, absorbed
-            elsewhere by validating the move for pseudo-legality before playing it, which koji
-            has no function for. Halving the entry is filed in ROADMAP as its own experiment; it
-            needs that function first, and the function is the risk, not the packing.
+            1.00x at depth 3 against 6.34x at depth 9: transpositions are what deepens, so the
+            bench is calibrated well below where the engine plays. Effective branching factor at
+            8->9 falls 4.27 -> 3.98, at 7->8 14.5 -> 5.3. Raising `bench_depth` once ordering
+            lands would make it a better predictor of Elo, not merely a bigger number.
 
             **The strength claim is open, and cannot be closed yet** — see the entry below.
 
@@ -243,26 +230,15 @@ implementation site — restating them here is how this file stops being worth r
 - Elo:      +42.68 +/- 43.90
 - games:    90 (29-18-43)
 - bench:    22088265
-- notes:    Stopped on purpose. koji parses `wtime`/`btime` and ignores them, searching a fixed
-            `default_depth = 6` whatever the clock says — so at a time control the two binaries
-            are **the same player**: all 16 bench positions, `go depth 6`, both binaries, 16/16
-            identical `bestmove`. A transposition table changes how fast a depth is reached, and
-            koji has no mechanism that converts speed into depth.
+- notes:    Stopped deliberately, not by an LLR bound. koji parses `wtime`/`btime` and ignores
+            them, searching a fixed `default_depth = 6` whatever the clock says, so the two
+            binaries are **the same player**: 16/16 bench positions give an identical `bestmove`
+            at `go depth 6`. The table changes how fast a depth is reached and nothing converts
+            that into depth.
 
-            What the 90 games were actually measuring was time forfeits: 7 of the first 101
-            games ended on the clock, and the fast side loses fewer. That is a real effect at
-            this TC and it is why the LLR was drifting positive, but attributing it to the table
-            would be wrong twice over — wrong mechanism, and it *understates* the change, since
-            the 6.3x node reduction at depth 9 buys nothing at all until the search is allowed to
-            use it.
+            So the 90 games were measuring time forfeits — 7 of the first 101 ended on the clock,
+            and the faster side loses fewer. Real at this TC, but the wrong mechanism, and it
+            understates the change: the 6.3x at depth 9 buys nothing until the search can spend it.
 
-            **This generalises past this branch.** Any Elo-affecting change measured before
-            `go wtime/btime` lands gets the same answer, and Phase 3 opens with "every merge from
-            here on is SPRT-gated" — which is not achievable in the roadmap's current order.
-            Quiescence, move ordering and PSQT all sit ahead of time management today, and each
-            would be merged on the same unmeasurable footing this one is. The instrument comes
-            first. ROADMAP carries the dependency.
-
-            Everything the harness itself needed does work and is now set up: fastchess alpha
-            1.8.2, the book fetched and checksum-verified, 14 of 16 threads, `-repeat -recover`.
-            The next SPRT does not have to rebuild any of that.
+            **No SPRT on this engine means anything until `go wtime/btime` lands.** Harness itself
+            is fine and set up: fastchess alpha 1.8.2, book checksum-verified, 14 of 16 threads.
