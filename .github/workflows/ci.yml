@@ -73,6 +73,13 @@ jobs:
       - name: Format
         run: zig fmt --check build.zig build.zig.zon src
 
+      # The hooks enforce two rules this repo states in public, and their vector
+      # suite was previously run only by a human invoking /audit — so a guard.sh
+      # edit that opened a hole could reach main unchallenged. It needs no Zig
+      # and takes under a second.
+      - name: Hook vectors
+        run: bash .claude/hooks/guard_test.sh
+
       - name: Test
         run: zig build test
 
