@@ -51,13 +51,17 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 
 ## Phase 2 — Search + HCE
 
-- [ ] Negamax/alpha-beta, iterative deepening
+- [x] Negamax/alpha-beta, iterative deepening — material-only eval, repetition and fifty-move
+      draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
+      `bench`
 - [ ] Transposition table
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
-- [ ] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
+- [ ] A minimal `go wtime/btime` budget — the clock is currently parsed and ignored, and a fixed
+      depth searched instead. Real time management stays in Phase 3
+- [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
 **Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a

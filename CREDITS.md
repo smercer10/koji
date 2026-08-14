@@ -138,6 +138,53 @@ Two rules:
 > https://www.chessprogramming.org/Chess_Position — koji's move list is sized 256, the next power of
 > two above it
 
+> **minimax over a game tree** — origin: *contested. CPW says John von Neumann (1928, "Zur Theorie
+> der Gesellschaftsspiele") "is usually associated with that concept", but that "primacy probably
+> belongs to Émile Borel" (1921), and notes a conceivable claim for Charles Babbage* via
+> https://www.chessprogramming.org/Minimax — what koji actually implements is the variant CPW
+> attributes to *Norbert Wiener* (Cybernetics, 1948): minimax over heuristic scores at a depth
+> limit, rather than von Neumann's exact terminal values
+
+> **negamax** — origin: *unclear (folklore; CPW's page gives the formulation with no history section
+> and credits no originator)* via https://www.chessprogramming.org/Negamax — the Knuth & Moore
+> attribution widely repeated elsewhere for negamax is one CPW does not make, so koji does not make
+> it either
+
+> **alpha-beta pruning** — origin: *no single inventor. CPW: "invented independently by several
+> researchers and pioneers from the 50s" — John McCarthy proposed it after seeing Bernstein's
+> program at the 1956 Dartmouth workshop; Newell, Shaw and Simon (1958) and Arthur Samuel (1959)
+> approximated it; Daniel Edwards and Timothy Hart described it (1961); Alexander Brudno (1963)
+> reached it independently of McCarthy* via https://www.chessprogramming.org/Alpha-Beta — trail:
+> *Donald Knuth and Ronald Moore, "An Analysis of Alpha-Beta Pruning", 1975, is the rigorous
+> analysis and the modern formulation — that, and not invention, is what their names are attached
+> to here*
+
+> **iterative deepening, re-searching the previous iteration's best path first** — origin: *David
+> Slate and Larry Atkin, Chess 4.5, 1977* via https://www.chessprogramming.org/Iterative_Deepening —
+> trail: *iterated search for time control is older (John Scott, 1969), and CPW credits Jim Gillogly
+> with coining the term*
+
+> **triangular PV table** — origin: *unclear (folklore; CPW documents the array layout and the
+> copy-up step with no history section and no author credited)* via
+> https://www.chessprogramming.org/Triangular_PV-Table
+
+> **mate scores decremented by ply distance to the root** — origin: *unclear (folklore; CPW states
+> the convention as what programs "usually" do and names no one)* via
+> https://www.chessprogramming.org/Score
+
+> **scoring the first repetition as a draw rather than waiting for the third** — origin: *unclear
+> (folklore; CPW: "most programs do this on the first repetition", crediting no one, and frames it
+> as a trade-off rather than a recommendation)* via https://www.chessprogramming.org/Repetitions —
+> the named credit on that page, *Ken Thompson* in Belle for detecting repetitions through the
+> transposition table, is a different technique and does not transfer to this decision
+
+> **material piece values** — origin: *the 1/3/3/5/9 scale is Claude Shannon's, "Programming a
+> Computer for Playing Chess", 1949; CPW's table gives his row as 100/300/300/500/900. koji's exact
+> set, 100/320/330/500/900, is **Tomasz Michniewski's**, 1995, from his Simplified Evaluation
+> Function* via https://www.chessprogramming.org/Point_Value — trail: *CPW tabulates a dozen
+> independently proposed sets spanning 1940 to 2012; there is no single "standard" refinement, only
+> named ones*
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming

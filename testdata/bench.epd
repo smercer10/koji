@@ -1,0 +1,87 @@
+# koji's benchmark position set.
+#
+# `koji bench` searches every position here to a fixed depth and prints the
+# summed node count. That number is the engine's fingerprint: it goes in the
+# `Bench:` line of every commit touching search or eval, it is what `git bisect`
+# follows when strength regresses, and OpenBench compares its NPS across
+# machines. It must therefore be deterministic across runs, builds and CPUs.
+#
+# Chosen here, position by position, rather than inherited from another engine's
+# bench list. Positions are facts and no one owns them, but which ones an engine
+# measures itself on is a choice, and this is koji's.
+#
+# What the set is trying to be:
+#
+#   - Representative of positions a game actually reaches, which is why
+#     testdata/perft.epd is not reused for this. Those positions were picked to
+#     torture the move generator — Kiwipete, promotion races — and a workload
+#     built from them would describe a game koji will never play.
+#   - Spread across the phases, because search behaves differently in each:
+#     4 openings, 6 middlegames, 4 endgames, 2 sharp positions.
+#   - Spread across structures: open and closed centres, same- and
+#     opposite-side castling, an isolated queen's pawn, opposite-coloured
+#     bishops, and a pawn one square from promoting.
+#
+# Format is testdata/perft.epd's, minus the operations: one FEN per line, `#`
+# comments, blank lines ignored. Every line is asserted legal by a test, so a
+# typo here fails the build rather than quietly changing the bench number.
+#
+# Adding, removing or reordering a line changes the bench number legitimately.
+# When that happens, say so in docs/testlog.md — an unexplained change to this
+# file is indistinguishable from a search regression.
+
+# --- openings ---------------------------------------------------------------
+
+# Ruy Lopez, closed: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7
+r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 4 6
+
+# Sicilian Najdorf: 1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 a6
+rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6
+
+# Queen's Gambit Declined: 1.d4 d5 2.c4 e6 3.Nc3 Nf6 4.Bg5 Be7 5.e3 O-O
+rnbq1rk1/ppp1bppp/4pn2/3p2B1/2PP4/2N1P3/PP3PPP/R2QKBNR w KQ - 3 6
+
+# King's Indian: 1.d4 Nf6 2.c4 g6 3.Nc3 Bg7 4.e4 d6 5.Nf3 O-O
+rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R w KQ - 1 6
+
+# --- middlegames ------------------------------------------------------------
+
+# Isolated queen's pawn: the d-pawn is weak and the pieces are active
+r1bq1rk1/pp2bppp/2n1pn2/8/2BP4/2N1BN2/PP3PPP/R2Q1RK1 w - - 0 11
+
+# Opposite-side castling, both kings committed, pawn storms to come
+2kr1b1r/ppp1qppp/2n1bn2/3p4/3P4/2NBBN2/PPPQ1PPP/2KR3R w - - 8 11
+
+# Closed centre, French structure: few captures, long manoeuvring lines
+r1bqkb1r/pp3ppp/2n1pn2/2ppP3/3P4/2P2N2/PP3PPP/RNBQKB1R w KQkq - 0 7
+
+# Open Sicilian, heavy pieces, opposite wings
+r4rk1/1bqnbppp/p2ppn2/1p6/3NPP2/2N1B3/PPPQB1PP/2KR3R w - - 2 14
+
+# Symmetrical pawns, active minor pieces, a queen already offside
+r1b2rk1/pp1n1ppp/2pbpn2/q7/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 4 11
+
+# Queenless middlegame heading for an endgame: rook, bishop and six pawns each
+3r2k1/p4ppp/1p2p3/2b5/2P5/1P2BP2/P5PP/3R2K1 w - - 0 25
+
+# --- endgames ---------------------------------------------------------------
+
+# Rook and pawn against rook, pawn on the seventh
+2K5/1P6/8/8/8/6k1/r7/4R3 w - - 0 1
+
+# King and pawn, kings in opposition
+8/8/4k3/8/4P3/4K3/8/8 w - - 0 1
+
+# Queen against rook, both kings exposed
+8/8/5k2/8/8/6K1/4Q3/r7 w - - 0 1
+
+# Opposite-coloured bishops, pawns on both wings
+8/5pk1/6p1/3b3p/7P/4B1P1/5PK1/8 w - - 0 1
+
+# --- sharp ------------------------------------------------------------------
+
+# Black's pieces are all pointed at g1 and the material is level
+r4rk1/ppp2ppp/8/2bqn3/8/2N2Q2/PPP2PPP/R1B2RK1 w - - 0 15
+
+# A pawn one square from queening against three healthy kingside pawns
+6k1/1P3ppp/8/8/8/8/5PPP/6K1 w - - 0 1
