@@ -33,24 +33,18 @@ elsewhere() {
   [[ -z "$self" || "${1,,}" != "${self,,}" ]]
 }
 
-# Source, not description. The forges spell the code browser differently --
-# GitHub /blob/, GitLab /-/blob/, Gitea and Codeberg /src/branch/ -- and each
-# also serves raw file bodies and whole-tree archives. A commit page and a PR's
-# /files or /commits tab are the diff. The discussion on the same PR is fine and
-# is exactly what research is supposed to use, and repository roots are left
-# alone so cloning a shared tool (bullet, fastchess) still works.
+# Source, not description: the code browser, raw file bodies, whole-tree
+# archives, and a diff in any wrapper. The discussion on a PR is fine and is what
+# research is supposed to use; repository roots are left alone so cloning a
+# shared tool still works.
 #
-# Lowercased first: hostnames are case-insensitive, so Raw.GithubUserContent.com
-# reached the same bytes as the spelling that was blocked. The extension list is
-# a backstop for hosts not named here, never the only thing standing between a
-# vector and the file -- guard_test.sh carries an extensionless variant of every
-# host rule so that no rule is covered only by that list.
-#
-# The path segments are matched without a host qualifier on purpose. GitLab
-# spells its browser /-/blob/ and Gitea /src/branch/, but every one of them
-# contains a segment this list already names, so one rule covers the forges
-# rather than one rule per forge -- a list of hosts is a list that is always one
-# forge out of date.
+# Path segments are matched with no host qualifier on purpose -- GitLab spells
+# its browser /-/blob/ and Gitea /src/branch/, but each contains a segment named
+# here, so one rule covers the forges instead of one rule per forge, which is a
+# list that is always one forge out of date. Lowercased because hostnames are
+# case-insensitive. The extension list is a backstop for hosts not named here and
+# must never be the only rule covering one: guard_test.sh carries an
+# extensionless vector for each, and mutation-tests that they are load-bearing.
 looks_like_source() {
   local u="${1,,}"
   [[ "$u" =~ (raw|patch-diff)\.githubusercontent\.com ]] ||
@@ -83,10 +77,9 @@ Bash)
   [[ -z "$cmd" ]] && exit 0
 
   # curl and wget reach the same URLs WebFetch does. The scheme is optional
-  # because curl treats a bare host as http:// and GitHub redirects to https, so
-  # requiring "https?://" here let `curl -sL github.com/<o>/<r>/blob/...` past
-  # the whole check. The host still has to look like a host, which keeps paths
-  # such as .claude/hooks/guard.sh from being read as URLs.
+  # because curl treats a bare host as http:// and GitHub redirects, so requiring
+  # it skipped the check entirely. The host must still look like a host, which
+  # keeps paths like .claude/hooks/guard.sh from being read as URLs.
   while read -r url; do
     [[ -z "$url" ]] && continue
     looks_like_source "$url" &&
@@ -94,18 +87,17 @@ Bash)
         "Research from the discussion, the paper, or the CPW page."
   done < <(grep -oE '(https?://)?[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}/[^ "'\''<>]+' <<<"$cmd")
 
-  # A command line is a sequence of commands, so the rules below are applied to
-  # one command at a time. Scanning the whole string meant `gh --version; grep -R
-  # src/main .` was blocked as "gh targeting src/main" -- a wrong block, and the
-  # substring test it relied on also fired on any word containing "gh".
+  # A command line is a sequence of commands, so the rules below see one command
+  # at a time. Scanning the whole string blocked `gh --version; grep -R src/main
+  # .` as "gh targeting src/main", and its substring test fired on any word
+  # containing "gh".
   while IFS= read -r segment; do
     seg="${segment#"${segment%%[![:space:]]*}"}"
     [[ -z "$seg" ]] && continue
 
-    # Leading VAR=value assignments belong to the command that follows them.
-    # GH_REPO is gh's own way of naming a repository without --repo, and because
-    # it moves the command's first word it also slips past every permission rule
-    # keyed on "gh ...".
+    # Leading VAR=value assignments belong to the command that follows. GH_REPO
+    # names a repository without --repo, and by moving the command's first word
+    # it also slips past every permission rule keyed on "gh ...".
     env_repo=""
     while [[ "$seg" =~ ^([A-Za-z_][A-Za-z0-9_]*)=([^[:space:]]*)[[:space:]]+(.*)$ ]]; do
       [[ "${BASH_REMATCH[1]}" == "GH_REPO" ]] && env_repo="${BASH_REMATCH[2]//[\"\']/}"
@@ -173,11 +165,10 @@ Bash)
 
         api_target="$(sed -E 's#^(repos|orgs)/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+).*#\2#' <<<"$path")"
 
-        # Reads stay open -- the licence check in CLAUDE.md rule 2 is a cross-repo
-        # GET -- but only the reads that return facts about a repository. Gating
-        # this on a write flag instead let every endpoint that returns a file body
-        # through, which blocked `gh search code --repo` while permitting the
-        # `contents/` call that hands over the file itself.
+        # Reads stay open -- rule 2's licence check is a cross-repo GET -- but
+        # only those returning facts about a repository. Gating on a write flag
+        # instead let every file-body endpoint through: it blocked `gh search
+        # code --repo` while permitting the `contents/` call itself.
         if returns_source "$path" && elsewhere "$api_target"; then
           block "Blocked: that endpoint returns another repository's source." \
             "Research from descriptions only. If a technique genuinely cannot be" \

@@ -147,6 +147,9 @@ commitment to implement it.
   a `generate()` call at the start position (testlog, 2026-08-13), mostly the king danger sweep over
   the whole enemy army. Skip the sweep when the king has no destination anyway, compute danger
   lazily per candidate king square, or reuse it across a node's siblings.
+- Fancy (per-square-sized) attack tables against plain ones: 840KB versus 2.25MB. The size is the
+  only half of that trade koji has measured — no speed comparison has ever been run here, and plain
+  tables would have to be written to run one, so this is an experiment rather than a switch.
 - Drop the 32KB `line` or `between` table from `attacks.zig` and recompute what they serve. Measured
   unpromising already: ~0.1 cache misses per `generate()` call, so 64KB of tables are costing
   nothing to hold. Needs a new argument, not a repeat of this one.

@@ -168,9 +168,9 @@ pub const Undo = struct {
     castling: CastlingRights,
     ep: ?Square,
     halfmove: u8,
-    /// Saved rather than decremented back, because the increment saturates: at
-    /// the ceiling it is not reversible, and a FEN may start there. Free — it
-    /// lands in padding this struct already had.
+    /// Saved rather than decremented back: the increment saturates, so at the
+    /// ceiling it is not reversible and a FEN may start there. Free — it lands
+    /// in padding the struct already had.
     fullmove: u16,
     /// Restored wholesale rather than recomputed: the incremental path would
     /// have to re-derive the castling delta backwards for no gain.
@@ -254,9 +254,8 @@ pub fn makeMove(b: *Board, m: Move) Undo {
 
     b.side = us.flip();
     b.hash ^= zobrist.side;
-    // Saturating for the same reason as the halfmove clock above: a FEN can
-    // hand us a counter already at the limit, and this one is cosmetic — it
-    // reaches the FEN output and nothing else.
+    // Saturating for the same reason as the halfmove clock above: a FEN can hand
+    // us a counter already at the limit.
     if (us == .black) b.fullmove +|= 1;
 
     // O(64), so it is a Debug-only invariant rather than a plain assert: the

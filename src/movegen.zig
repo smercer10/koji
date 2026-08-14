@@ -39,20 +39,17 @@ const Move = move.Move;
 
 // --- move list ---------------------------------------------------------------------
 
-/// Sized for what `Board.fromFen` accepts, not for the 218 legal moves of the
-/// widest *reachable* position (a 1964 Petrović composition, proved maximal in
-/// 2024). A FEN handed to `perft` or `epd` need not be reachable, and the 218
-/// bounds nothing about one that is not — a hand-written 24-queen record used
-/// to generate 271 moves and write past the end of this array.
+/// Sized for what `Board.fromFen` accepts, **not** for the 218 legal moves of
+/// the widest *reachable* position: a FEN handed to `perft` or `epd` need not be
+/// reachable, and the 218 bounds nothing about one that is not. A 24-queen
+/// record generated 271 moves and wrote past the end of this array.
 ///
-/// `fromFen` now rejects material no game can produce, so the widest case left
-/// is a king, nine queens (eight promotions) and the starting rooks, bishops
-/// and knights. At each piece's mobility on an otherwise empty board that is
-/// `8 + 2 + 9*27 + 2*14 + 2*13 + 2*8 = 323`, counting two castles for the king.
-/// Spending a promotion on a pawn instead gives up 27 and returns at most 12,
-/// so the maximum sits at zero pawns. 384 clears it with room to spare, and the
-/// ceiling is loose anyway — those pieces block each other, and two independent
-/// hill climbs over positions this parser accepts found nothing past 214.
+/// `fromFen` rejects material no game can produce, so the widest case left is a
+/// king, nine queens (eight promotions) and the starting rooks, bishops and
+/// knights — `8 + 2 + 9*27 + 2*14 + 2*13 + 2*8 = 323` at each piece's mobility
+/// on an empty board, counting two castles. Spending a promotion on a pawn
+/// instead gives up 27 and returns at most 12, so zero pawns is the maximum.
+/// The ceiling is loose (hill climbs find nothing past 214) but it is a ceiling.
 //
 // origin: the 218 figure — Nenad Petrović's position (1964), reported by Andrew
 //         Shapira on CCC in 2005; proved maximal by Tobs40, 2024
@@ -65,9 +62,8 @@ pub const max_moves = 384;
 ///
 /// **Declare one `undefined` and let `generate` initialise it.** `= .{}` looks
 /// harmless — `moves` carries `undefined` as its own default — but it lowers to
-/// a `memset` of the whole struct, which perft paid at every interior node:
-/// 520 bytes a node before this array was widened, and 776 after. `generate`
-/// sets `len` before anything reads it, so there is nothing to zero.
+/// a `memset` of the whole struct, which perft was paying at every interior
+/// node for nothing: `generate` sets `len` before anything reads it.
 pub const MoveList = struct {
     moves: [max_moves]Move = undefined,
     len: usize = 0,
@@ -755,9 +751,8 @@ fn oracleFens(buf: *[16][]const u8) []const []const u8 {
         buf[n] = std.mem.trimEnd(u8, line[0..cut], " \t");
         n += 1;
     }
-    // The other end of the same rule. Both callers iterate what this returns, so
-    // an empty embed makes them loop zero times and pass green having compared
-    // nothing — the extreme case of the silent drop guarded against above.
+    // The other end of the same rule: an empty embed makes both callers loop
+    // zero times and pass green having compared nothing.
     assert(n > 0);
     return buf[0..n];
 }

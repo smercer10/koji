@@ -22,13 +22,21 @@ material change to Claude Code itself, since this setup was built against a movi
    something to link, not before.
 3. **Gaps.** A rule being followed in practice but written down nowhere, or a decision whose
    rationale is missing from the comment at the site that enforces it.
-4. **Attribution.** Every `// origin:` comment in the code has a `CREDITS.md` entry, and every entry
-   still points at code that exists.
+4. **Attribution.** Both directions. Every `// origin:` comment has a `CREDITS.md` entry and every
+   entry still points at code that exists — and every *adopted* technique has an origin at all. Only
+   the first direction can be checked mechanically, and it is the one that always passed while
+   borrowed-but-unlabelled code accumulated; `origin: unclear (folklore)` is the answer for anything
+   a doc comment concedes is standard practice.
 5. **Duplication.** One rule, one home. A rule with a code site lives as a comment there; a second
    copy elsewhere will drift and then contradict it.
 6. **Leanness.** Every doc, not just `CLAUDE.md`: could this say the same thing in fewer lines? Cut
    anything whose removal would not cause a mistake. If the architecture block has outgrown ~15
-   lines, split it into `docs/architecture.md`.
+   lines, split it into `docs/architecture.md`. Comments count as docs — a comment narrating what a
+   review found, rather than what a future reader must not break, is the same bloat with worse reach.
+   `docs/testlog.md` needs this most, because it only ever grows: read each entry against the rule in
+   its own header and cut anything a commit message or a comment at the implementation site already
+   holds. That rule has been there since the file was created and was still broken, so check it here
+   rather than trusting it.
 7. **Voice.** Factual, describing what the project does. Flag anything claiming a virtue, assuming
    what a reader wants, arguing a case, or promising something not yet done.
 8. **Setup currency.** Hooks fire — test the failure path, not just the pass: `bash
