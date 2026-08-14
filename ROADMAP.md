@@ -39,15 +39,15 @@ options. **Met — Phase 0 complete.**
       branch's code, plus a second pass threading xors back through every arm of make/unmake
 - [x] Legal move generation: leapers, pawns, castling, check and pin legality, with the `perft`
       driver and `divide` run over `testdata/perft.epd` from `test` and `test-slow`
-- [ ] Phase 0 shipped without its phase-boundary code review. Include everything it
+- [x] Phase 0 shipped without its phase-boundary code review. Include everything it
       wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
       `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,
       where every real defect so far has been found (settings.json at Phase 0; guard.sh
       bypasses and an unresolvable /sprt command in the pre-Phase-1 review)
 
-**Exit criterion:** perft exact on all standard positions to depth ≥6, checked against
-`testdata/perft.epd` (the oracle — node counts transcribed from CPW, not from memory); perft NPS
-recorded as the never-regress baseline.
+**Exit criterion:** perft exact on every position in `testdata/perft.epd`, at every depth that file
+carries; instructions per `generate()` call recorded as the never-regress baseline, *not* NPS
+(`docs/testlog.md`). **Met — Phase 1 complete.**
 
 ## Phase 2 — Search + HCE
 
