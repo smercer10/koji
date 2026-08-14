@@ -100,3 +100,50 @@ implementation site — restating them here is how this file stops being worth r
             ablation filed under ROADMAP's candidate ideas would have to pay for itself somewhere
             other than misses. Assembly spot-checked: every comptime table lands in `.rodata` and
             the PEXT path is live.
+
+### 2026-08-14 — Movegen bounds, and the memset perft was paying at every node
+- branch:   fix/movegen-bounds
+- type:     perft + bench
+- result:   PASS — oracle unchanged, 35/35 checks, 16,270,939,707 nodes; **-39% instructions**
+- bench:    0 (stub — no search exists yet)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    Two memory-safety bugs out of the Phase 1 review, both driven by nothing but a FEN
+            on the command line. `max_moves = 256` rested on the 218-move bound, which is a fact
+            about *reachable* positions — and nothing made the parser's output reachable. A
+            hand-written 24-queen record generates 271 legal moves: `koji perft 1` on it segfaults
+            the shipped build, having written past the end of a stack array. Separately
+            `fullmove += 1` was unguarded on a u16 the parser accepts at 65535, while the halfmove
+            clock two lines up was already saturating for exactly that reason.
+
+            The fix restores the precondition instead of widening the hole: `fromFen` now rejects
+            material no game can produce (a side promotes at most its eight pawns, so every piece
+            past the starting complement spends one), and `max_moves` is derived from what that
+            check still permits — `8 + 2 + 9*27 + 2*14 + 2*13 + 2*8 = 323`, so 384. The old
+            constant was not merely too small, it was justified against the wrong set.
+
+            **The measurement is the interesting part.** 384 alone cost **+19.4%** instructions on
+            startpos D6 — far too much for a stack array 256 bytes wider, so the assembly got read:
+
+                sub    $0x328,%rsp
+                mov    $0x308,%edx          <- 776 bytes
+                call   compiler_rt.memset
+
+            `var list: MoveList = .{}` lowers to a memset of the whole struct at every interior
+            node, despite `moves` carrying `undefined` as its field default. `main` was already
+            paying it — 520 bytes a node for nothing, since `generate` sets `len` as its first
+            statement. Declaring the list `undefined` deletes the call:
+
+                                    startpos D6      Kiwipete D5
+              instructions / call     1864 -> 1137     2244 -> 1520
+              change                    -39.0%           -32.3%
+              Mnps (wall clock)      157 -> 257       259 -> 359
+
+            Instructions are deterministic (+/-0.000001% over 3 runs, two alternating passes);
+            the NPS column is directional only, since WSL2 cannot resolve under ~5%. Node counts
+            are bit-identical at every depth, so this is pure removed work, not a behaviour change.
+            It is also a warning about the idiom rather than about this one line: `= .{}` on any
+            struct with a large `undefined` field will do the same in Phase 2's search stack.
+
+            Cost of the other fix: `fullmove` moved into `Undo` so the now-saturating increment is
+            reversible, measured at **+0.54%** instructions on its own, and `@sizeOf(Undo)` is
+            still 16 — it landed in padding the struct already had. A test pins that size.

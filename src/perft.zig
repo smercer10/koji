@@ -42,7 +42,7 @@ const MoveList = movegen.MoveList;
 pub fn perft(b: *Board, depth: u8) u64 {
     if (depth == 0) return 1;
 
-    var list: MoveList = .{};
+    var list: MoveList = undefined;
     movegen.generate(b, &list);
     if (depth == 1) return list.len;
 
@@ -58,7 +58,7 @@ pub fn perft(b: *Board, depth: u8) u64 {
 /// Perft split by root move: one `<uci> <nodes>` line each, then a blank line and
 /// the total. Comparing two divides is how a wrong node count is localised.
 pub fn divide(b: *Board, depth: u8, w: *Io.Writer) Io.Writer.Error!u64 {
-    var list: MoveList = .{};
+    var list: MoveList = undefined;
     movegen.generate(b, &list);
 
     var total: u64 = 0;
