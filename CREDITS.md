@@ -252,6 +252,15 @@ gh api repos/<owner>/<repo> --jq .license.spdx_id
 Projects relicense, so a remembered licence is a guess. There is no pre-approved or pre-excluded
 list here — the check is one command and belongs at the moment of use.
 
+**Opening books are the one thing used unlicensed, deliberately.** SPRTs run on
+`UHO_Lichess_4852_v1.epd` from OpenBench, whose repository declares no licence — but a book is test
+*input*: fetched on demand, gitignored, never redistributed, and never linked into the engine, so
+the rule above, which is about code that would have to be relicensed, does not reach it. It gets no
+technique entry either, and not by oversight: there is no implementation site to carry the
+`// origin:` half of one, and the author is genuinely unclear — the books repository has no README,
+and CPW's opening-book page credits UHO to nobody. What a book does get is the `book:` field on
+every `docs/testlog.md` entry, which is where an Elo number's provenance is actually load-bearing.
+
 ## Naming
 
 Takedown requests — naming, attribution, testing opponents — are handled per the note at the end

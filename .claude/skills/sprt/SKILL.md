@@ -53,8 +53,8 @@ The sha is OpenBench's own (`Books/*.json` in `AndyGrant/OpenBench`) and checksu
 `.epd`, not the zip — a truncated book is a silently worse SPRT, not an error.
 
 Clone rather than fetch the URL in that manifest: `guard.sh` blocks raw-file and `contents/` reads
-and leaves repository roots alone so shared tools stay reachable. The books repo is data only — no
-engine source, and no declared licence, so nothing from it is vendored or credited.
+and leaves repository roots alone so shared tools stay reachable. The repo is data only, and carries
+no licence — why that is fine for a book and not for code is in CREDITS.md.
 
 fastchess is built from source into `tools/fastchess/` (gitignored — it is a tool, not a dependency).
 
