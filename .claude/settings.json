@@ -30,10 +30,8 @@
       "Bash(gh issue comment:*)",
       "Bash(gh pr comment:*)",
       "Bash(gh pr review:*)",
-      "Bash(gh api --method POST:*)",
-      "Bash(gh api -X POST:*)",
-      "Bash(gh api --method PATCH:*)",
-      "Bash(gh api -X PATCH:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(git merge:*)",
       "WebFetch(domain:raw.githubusercontent.com)"
     ]
   },
