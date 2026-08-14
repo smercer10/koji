@@ -346,7 +346,9 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
             searcher.setPosition(Board.startpos);
         } else if (eql(token, "position")) {
             engine.joinSearch();
-            setPosition(searcher, &it);
+            if (!setPosition(searcher, &it)) {
+                engine.say("info string position command not understood, position unchanged\n");
+            }
         } else if (eql(token, "go")) {
             try startSearch(&engine, &it);
         } else if (eql(token, "stop")) {
@@ -369,10 +371,15 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
 /// Every move is checked against the legal move list before it is played. A GUI
 /// only sends legal moves, but `makeMove` on one that is not is memory-unsafe in
 /// a release build — the same class of fault `movegen.legalPosition` exists to
-/// stop — and stdin is not ours to trust. A move that fails the check ends the
-/// replay, leaving the position at the legal prefix.
-fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) void {
-    const kind = it.next() orelse return;
+/// stop — and stdin is not ours to trust.
+///
+/// Returns false if the command could not be applied in full. UCI has no error
+/// reply, and the danger in staying quiet is specific: the engine would keep the
+/// *previous* position and answer the next `go` with a move that is illegal in
+/// the one the GUI thinks it set. The caller turns a false into an `info string`
+/// so that failure is visible rather than inferred from a rejected move.
+fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) bool {
+    const kind = it.next() orelse return false;
 
     if (eql(kind, "startpos")) {
         s.setPosition(Board.startpos);
@@ -384,7 +391,7 @@ fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) void {
         while (it.peek()) |field| {
             if (eql(field, "moves")) break;
             _ = it.next();
-            if (len + field.len + 1 > fen_buf.len) return;
+            if (len + field.len + 1 > fen_buf.len) return false;
             if (len > 0) {
                 fen_buf[len] = ' ';
                 len += 1;
@@ -392,16 +399,16 @@ fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) void {
             @memcpy(fen_buf[len..][0..field.len], field);
             len += field.len;
         }
-        s.setPosition(movegen.fromFen(fen_buf[0..len]) catch return);
+        s.setPosition(movegen.fromFen(fen_buf[0..len]) catch return false);
     } else {
-        return;
+        return false;
     }
 
-    const moves = it.next() orelse return;
-    if (!eql(moves, "moves")) return;
+    const moves = it.next() orelse return true;
+    if (!eql(moves, "moves")) return false;
 
     while (it.next()) |text| {
-        const m = Move.fromUci(&s.b, text) orelse return;
+        const m = Move.fromUci(&s.b, text) orelse return false;
         var list: movegen.MoveList = undefined;
         movegen.generate(&s.b, &list);
         for (list.slice()) |legal| {
@@ -409,31 +416,52 @@ fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) void {
                 s.playMove(m);
                 break;
             }
-        } else return;
+        } else return false;
     }
+    return true;
 }
 
 /// `go [depth n] [nodes n] [movetime ms] [infinite] [wtime ms] ...`.
-fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
-    e.joinSearch();
-
-    var limits: search.Limits = .{ .depth = default_depth };
+///
+/// Every limit is an independent ceiling and the search stops at whichever binds
+/// first, so `go depth 4 nodes 500000` means both and not whichever was typed
+/// last. `search.Limits` starts wide open and each token only ever narrows it —
+/// writing `max_ply` back into `depth` to mean "no depth limit" is what made
+/// this order-dependent before.
+fn parseLimits(it: *std.mem.TokenIterator(u8, .any)) search.Limits {
+    var limits: search.Limits = .{};
+    var bounded = false;
 
     while (it.next()) |token| {
         if (eql(token, "infinite")) {
-            limits.depth = search.max_ply;
+            // Already the default: every ceiling is open.
+            bounded = true;
         } else if (eql(token, "depth")) {
-            limits.depth = @min(parseNext(u8, it) orelse continue, search.max_ply);
+            // Parsed wide, then clamped. A `u8` here would wrap `go depth 1000`
+            // into a parse failure and silently fall back to `default_depth`.
+            const requested = parseNext(u32, it) orelse continue;
+            limits.depth = @intCast(@min(requested, search.max_ply));
+            bounded = true;
         } else if (eql(token, "nodes")) {
             limits.nodes = parseNext(u64, it) orelse continue;
-            limits.depth = search.max_ply;
+            bounded = true;
         } else if (eql(token, "movetime")) {
             limits.movetime_ms = parseNext(u64, it) orelse continue;
-            limits.depth = search.max_ply;
+            bounded = true;
         }
         // wtime/btime/winc/binc/movestogo are consumed and ignored: koji has no
-        // clock yet, and `default_depth` above stands in for one. ROADMAP.
+        // clock yet. ROADMAP.
     }
+
+    // A `go` carrying only a clock koji cannot read would otherwise search to
+    // `max_ply` and never come back.
+    if (!bounded) limits.depth = default_depth;
+    return limits;
+}
+
+fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
+    e.joinSearch();
+    const limits = parseLimits(it);
 
     // Armed here rather than inside the search: a `stop` can arrive before the
     // thread reaches its first node, and clearing it there would swallow it.
@@ -632,7 +660,7 @@ test "position replays a game and refuses a move that is not legal" {
     s.init(std.testing.io);
 
     var good = std.mem.tokenizeAny(u8, "startpos moves e2e4 e7e5 g1f3", " \t");
-    setPosition(s, &good);
+    try std.testing.expect(setPosition(s, &good));
     try std.testing.expectEqual(Board.startpos.hash, s.history[0]);
     try std.testing.expectEqual(@as(usize, 4), s.root_history_len);
     try std.testing.expect(s.b.consistent());
@@ -640,15 +668,87 @@ test "position replays a game and refuses a move that is not legal" {
     // `e2e4` is well-formed but not legal here, and playing it would move a
     // piece that is not there. The replay has to stop, not corrupt the board.
     var bad = std.mem.tokenizeAny(u8, "startpos moves e2e4 e2e4", " \t");
-    setPosition(s, &bad);
+    try std.testing.expect(!setPosition(s, &bad));
     try std.testing.expectEqual(@as(usize, 2), s.root_history_len);
     try std.testing.expect(s.b.consistent());
     try std.testing.expectEqual(s.b.hash, s.b.computeHash());
 
     // A FEN position, and a move played from it.
     var fen = std.mem.tokenizeAny(u8, "fen 6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1 moves a1a8", " \t");
-    setPosition(s, &fen);
+    try std.testing.expect(setPosition(s, &fen));
     try std.testing.expect(s.b.consistent());
     try std.testing.expectEqual(board.Color.black, s.b.side);
     try std.testing.expectEqual(board.Piece.w_rook, s.b.pieceAt(.a8));
+}
+
+test "a rejected position leaves the board alone and says so" {
+    attacks.init();
+    const s = try std.testing.allocator.create(search.Searcher);
+    defer std.testing.allocator.destroy(s);
+    s.init(std.testing.io);
+
+    var start = std.mem.tokenizeAny(u8, "startpos moves d2d4", " \t");
+    try std.testing.expect(setPosition(s, &start));
+    const established = s.b.hash;
+
+    // An unparseable FEN must not silently leave the engine on the previous
+    // position with no signal: the next `go` would answer with a move that is
+    // illegal in the position the GUI believes it set.
+    var junk = std.mem.tokenizeAny(u8, "fen not/a/valid/fen w - - 0 1", " \t");
+    try std.testing.expect(!setPosition(s, &junk));
+    try std.testing.expectEqual(established, s.b.hash);
+
+    var unknown = std.mem.tokenizeAny(u8, "sideways", " \t");
+    try std.testing.expect(!setPosition(s, &unknown));
+    try std.testing.expectEqual(established, s.b.hash);
+}
+
+test "every go limit is a ceiling, whatever order they arrive in" {
+    // Each limit used to be applied by writing `max_ply` back into `depth` to
+    // mean "no depth limit", which made `go depth 4 nodes N` depend on which
+    // token came last. They are independent ceilings.
+    const both_orders = [_][]const u8{
+        "depth 4 nodes 999999999",
+        "nodes 999999999 depth 4",
+    };
+    for (both_orders) |text| {
+        var it = std.mem.tokenizeAny(u8, text, " \t");
+        const limits = parseLimits(&it);
+        try std.testing.expectEqual(@as(u8, 4), limits.depth);
+        try std.testing.expectEqual(@as(u64, 999999999), limits.nodes);
+    }
+
+    var deep = std.mem.tokenizeAny(u8, "depth 3 movetime 2000", " \t");
+    const mixed = parseLimits(&deep);
+    try std.testing.expectEqual(@as(u8, 3), mixed.depth);
+    try std.testing.expectEqual(@as(?u64, 2000), mixed.movetime_ms);
+}
+
+test "go depth clamps instead of wrapping" {
+    // Parsed as u8, `depth 1000` overflowed into a parse failure and quietly
+    // fell back to `default_depth` — the opposite of what was asked for.
+    for ([_][]const u8{ "depth 1000", "depth 4294967295" }) |text| {
+        var it = std.mem.tokenizeAny(u8, text, " \t");
+        try std.testing.expectEqual(@as(u8, search.max_ply), parseLimits(&it).depth);
+    }
+
+    var junk = std.mem.tokenizeAny(u8, "depth banana", " \t");
+    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&junk).depth);
+}
+
+test "a go with no limit koji understands still terminates" {
+    // A clock-only `go` is what a GUI at a real time control sends. koji cannot
+    // read it yet, and must not answer by searching to `max_ply`.
+    var clock = std.mem.tokenizeAny(u8, "wtime 60000 btime 60000 winc 600 binc 600", " \t");
+    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&clock).depth);
+
+    var bare = std.mem.tokenizeAny(u8, "", " \t");
+    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&bare).depth);
+
+    // `infinite` is the one that genuinely means "no ceiling".
+    var forever = std.mem.tokenizeAny(u8, "infinite", " \t");
+    const unlimited = parseLimits(&forever);
+    try std.testing.expectEqual(@as(u8, search.max_ply), unlimited.depth);
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), unlimited.nodes);
+    try std.testing.expectEqual(@as(?u64, null), unlimited.movetime_ms);
 }
