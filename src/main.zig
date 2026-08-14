@@ -160,7 +160,7 @@ fn epdCommand(io: Io, arena: std.mem.Allocator, out: *Io.Writer, args: []const [
         return error.InvalidArgument;
     };
 
-    const result = perft_mod.runSuite(text, std.math.maxInt(u64), out) catch |err| {
+    const result = perft_mod.runSuite(text, .unlimited, out) catch |err| {
         try out.print("epd: {s}\n", .{@errorName(err)});
         try out.flush();
         return error.InvalidArgument;

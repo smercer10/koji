@@ -24,11 +24,12 @@ pub fn build(b: *std.Build) void {
     // back Debug unless -Drelease is passed (std.Build.zig:1378). That silently
     // benchmarks a Debug binary, which for an engine is 3x off and pure noise.
     // An engine built in Debug by accident is not slightly slow, it is useless.
-    const optimize = b.option(
+    const requested_optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
-        "Prioritize performance, safety, or binary size (default: ReleaseFast)",
-    ) orelse .ReleaseFast;
+        "Prioritize performance, safety, or binary size (default: ReleaseFast, tests ReleaseSafe)",
+    );
+    const optimize = requested_optimize orelse .ReleaseFast;
 
     // SPSA tuning parameters become UCI options only when this is set, and it stays
     // off by default: a build advertising dozens of internal tuning knobs breaks GUIs
@@ -61,12 +62,23 @@ pub fn build(b: *std.Build) void {
 
     // --- tests --------------------------------------------------------------
 
-    // Tests are built ReleaseSafe rather than at `optimize`. Safety checks are the
-    // point of a test run, but perft at Debug speed would blow the <5s budget that
-    // makes `zig build test` cheap enough to gate every turn on.
-    const test_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    // Tests *default* to ReleaseSafe: safety checks are the point of a test run,
+    // but perft at Debug speed would blow the budget that makes `zig build test`
+    // cheap enough to gate every turn on (see CLAUDE.md for the figure).
+    //
+    // An explicit -Doptimize still wins, and has to. Debug is the only mode
+    // where make/unmake's `consistent()` invariant runs at all, and while this
+    // was hardcoded there was no build in the project that could reach it — the
+    // flag was accepted, ignored, and the miss looked like a cache hit.
+    const test_optimize = requested_optimize orelse .ReleaseSafe;
 
     const test_step = b.step("test", "Unit tests + shallow perft (fast; gates every turn)");
+    // A test build's root is the test runner, not `main`, so Zig never analyses
+    // what only `main` reaches — `zig build test` stayed green through a call in
+    // `epdCommand` that did not compile. Depending on the exe makes the gate
+    // mean "this builds and passes" rather than only the second half. Warm, the
+    // compile is already cached and costs ~0.03s.
+    test_step.dependOn(&exe.step);
     const fast_tests = b.addTest(.{
         .root_module = engineModule(b, .{
             .root_source_file = b.path("src/main.zig"),
@@ -79,6 +91,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
     const test_slow_step = b.step("test-slow", "Deep perft (minutes; run before merging movegen work)");
+    test_slow_step.dependOn(&exe.step);
     const slow_tests = b.addTest(.{
         .root_module = engineModule(b, .{
             .root_source_file = b.path("src/main.zig"),
