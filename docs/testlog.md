@@ -220,12 +220,7 @@ implementation site — restating them here is how this file stops being worth r
             **Why there is no Elo number.** An SPRT was started and deliberately stopped at 90
             games: elo0=0 elo1=5 alpha=beta=0.05, 8+0.08, UHO_Lichess_4852_v1.epd, LLR 0.24,
             +42.68 +/- 43.90, 29-18-43. koji parses `wtime`/`btime` and ignores them, searching a
-            fixed `default_depth = 6` whatever the clock says, so the two binaries are **the same
-            player** — 16/16 bench positions give an identical `bestmove` at `go depth 6`. What
-            those games measured was time forfeits, 7 of the first 101 ending on the clock, which
-            the faster side loses fewer of. Real at this TC, wrong mechanism, and an understatement
-            besides: the 6.3x at depth 9 buys nothing until the search can spend it.
-
-            **No SPRT here means anything until `go wtime/btime` lands**, which is why that box
-            moved to the front of Phase 2. The harness is fine and set up: fastchess alpha 1.8.2,
-            book checksum-verified, 14 of 16 threads.
+            fixed `default_depth = 6` whatever the clock says, so the two binaries are the same
+            player: 16/16 bench positions give an identical `bestmove` at `go depth 6`. Those games
+            were measuring time forfeits — 7 of the first 101 ended on the clock, which the faster
+            side loses fewer of. **Nothing is SPRT-measurable here until a `go` spends the clock.**
