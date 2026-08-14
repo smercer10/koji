@@ -29,8 +29,12 @@ all:
 bench: all
 	./$(EXE) bench
 
+# Built for the same CPU as `all`. This is the only target that could catch a
+# codegen divergence the native build has and a generic one does not, which is
+# exactly what the bench invariant above is about — so it is the last target that
+# should be built generic.
 test:
-	$(ZIG) build test
+	$(ZIG) build test -Dcpu=$(CPU)
 
 clean:
 	rm -rf zig-out .zig-cache $(EXE)
