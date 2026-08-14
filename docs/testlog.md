@@ -153,10 +153,6 @@ implementation site — restating them here is how this file stops being worth r
               branch misses / node          0.395
               cache misses / node          0.0274
 
-            **The never-regress figure is instructions per node**, for the reason the movegen
-            baseline gave: WSL2 cannot resolve a wall-clock change under ~5%, and instructions
-            repeat to +/-0.00%.
-
             **Bench invariant checked, not assumed**: `-Dcpu=x86_64` — no AVX2, and the magic path
             instead of PEXT — gives *the same* 70,586,607 nodes at 27.2-27.9 Mnps. Identical work,
             ~12% slower to do it.
