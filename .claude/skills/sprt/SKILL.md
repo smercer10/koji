@@ -44,8 +44,7 @@ is a fetch, not a checkout:
 git clone --filter=blob:none --sparse --depth 1 \
   https://github.com/AndyGrant/openbench-books.git tools/openbench-books
 git -C tools/openbench-books sparse-checkout set --no-cone '/UHO_Lichess_4852_v1.epd.zip'
-mkdir -p books && cd books && python3 -c "import zipfile; \
-  zipfile.ZipFile('../tools/openbench-books/UHO_Lichess_4852_v1.epd.zip').extractall('.')"
+mkdir -p books && unzip -q -o tools/openbench-books/UHO_Lichess_4852_v1.epd.zip -d books
 sha256sum books/UHO_Lichess_4852_v1.epd
 # 7a7f6470615a69c6cf23d565417701d38732876f480af90d67b42abade35644a
 ```

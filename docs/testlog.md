@@ -217,28 +217,15 @@ implementation site — restating them here is how this file stops being worth r
             8->9 falls 4.27 -> 3.98, at 7->8 14.5 -> 5.3. Raising `bench_depth` once ordering
             lands would make it a better predictor of Elo, not merely a bigger number.
 
-            **The strength claim is open, and cannot be closed yet** — see the entry below.
+            **Why there is no Elo number.** An SPRT was started and deliberately stopped at 90
+            games: elo0=0 elo1=5 alpha=beta=0.05, 8+0.08, UHO_Lichess_4852_v1.epd, LLR 0.24,
+            +42.68 +/- 43.90, 29-18-43. koji parses `wtime`/`btime` and ignores them, searching a
+            fixed `default_depth = 6` whatever the clock says, so the two binaries are **the same
+            player** — 16/16 bench positions give an identical `bestmove` at `go depth 6`. What
+            those games measured was time forfeits, 7 of the first 101 ending on the clock, which
+            the faster side loses fewer of. Real at this TC, wrong mechanism, and an understatement
+            besides: the 6.3x at depth 9 buys nothing until the search can spend it.
 
-### 2026-08-14 — SPRT is not yet a usable instrument for this engine
-- branch:   feat/tt
-- type:     SPRT — **abandoned as invalid**, not failed
-- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
-- TC:       8+0.08
-- book:     UHO_Lichess_4852_v1.epd (sha256 7a7f6470...de35644a, matches the OpenBench manifest)
-- result:   inconclusive by construction — stopped after 90 games
-- LLR:      0.24 (8.1%) (-2.94, 2.94)
-- Elo:      +42.68 +/- 43.90
-- games:    90 (29-18-43)
-- bench:    22088265
-- notes:    Stopped deliberately, not by an LLR bound. koji parses `wtime`/`btime` and ignores
-            them, searching a fixed `default_depth = 6` whatever the clock says, so the two
-            binaries are **the same player**: 16/16 bench positions give an identical `bestmove`
-            at `go depth 6`. The table changes how fast a depth is reached and nothing converts
-            that into depth.
-
-            So the 90 games were measuring time forfeits — 7 of the first 101 ended on the clock,
-            and the faster side loses fewer. Real at this TC, but the wrong mechanism, and it
-            understates the change: the 6.3x at depth 9 buys nothing until the search can spend it.
-
-            **No SPRT on this engine means anything until `go wtime/btime` lands.** Harness itself
-            is fine and set up: fastchess alpha 1.8.2, book checksum-verified, 14 of 16 threads.
+            **No SPRT here means anything until `go wtime/btime` lands**, which is why that box
+            moved to the front of Phase 2. The harness is fine and set up: fastchess alpha 1.8.2,
+            book checksum-verified, 14 of 16 threads.
