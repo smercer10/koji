@@ -448,11 +448,11 @@ pub const Board = struct {
             }
         }
 
-        // Three checks past syntax, because movegen's preconditions are not
+        // Four checks past syntax, because movegen's preconditions are not
         // recoverable further in: it takes `lsb(pieces(c, .king))`, which
         // asserts a non-empty board — and asserts vanish in ReleaseFast. A pawn
         // on the back rank is the same kind of trap: no move out of it is
-        // representable. All three are cheap here and unfixable at depth 20.
+        // representable. All four are cheap here and unfixable at depth 20.
         for ([_]Color{ .white, .black }) |c| {
             if (@popCount(b.pieces(c, .king)) != 1) return error.InvalidPlacement;
         }
@@ -477,6 +477,29 @@ pub const Board = struct {
             if (!r.held) continue;
             if (b.pieceAt(r.king) != Piece.make(r.color, .king)) return error.InvalidCastling;
             if (b.pieceAt(r.rook) != Piece.make(r.color, .rook)) return error.InvalidCastling;
+        }
+
+        // The fourth: material a game can actually produce. `movegen.MoveList`
+        // is a fixed array whose size is derived from this check — without it a
+        // record can write two dozen queens onto the board and generate more
+        // moves than the array holds, which in a release build is a write past
+        // its end rather than a failed assert. A side promotes at most its
+        // eight pawns, so every piece beyond the starting complement spends one
+        // of them, and the pawns still on the board spend the rest.
+        for ([_]Color{ .white, .black }) |c| {
+            // `spent` starts at the pawns still on the board and only grows, so
+            // nine pawns is already caught by the one test at the end.
+            var spent = @popCount(b.pieces(c, .pawn));
+            inline for ([_]struct { t: PieceType, base: u7 }{
+                .{ .t = .queen, .base = 1 },
+                .{ .t = .rook, .base = 2 },
+                .{ .t = .bishop, .base = 2 },
+                .{ .t = .knight, .base = 2 },
+            }) |g| {
+                const n = @popCount(b.pieces(c, g.t));
+                if (n > g.base) spent += n - g.base;
+            }
+            if (spent > 8) return error.InvalidPlacement;
         }
 
         // `parsePlacement` hashed the pieces through `put`; the rest of the
@@ -894,6 +917,32 @@ test "malformed FEN is rejected with a specific error" {
     };
     for (cases) |c| {
         try std.testing.expectError(c[1], Board.fromFen(c[0]));
+    }
+}
+
+test "material no game can produce is rejected" {
+    // The last two are the records that used to overflow `movegen.MoveList`:
+    // 258 and 271 legal moves against a 256-entry array.
+    for ([_][]const u8{
+        "k7/Q7/QQQQQQQQ/Q7/RR6/BB6/NN6/K7 w - - 0 1", // ten queens: nine promotions
+        "k7/P7/QQQQQQQQ/Q7/RR6/BB6/NN6/K7 w - - 0 1", // nine, but a pawn still owes one
+        "k7/8/8/8/8/P7/PPPPPPPP/K7 w - - 0 1", // nine pawns
+        "knQQQQQ1/nn5Q/QQ5Q/Q3Q2Q/Q6Q/Q6Q/Q5Q1/1QQQQQQK w - - 0 1",
+        "BQQQQQQK/Q6Q/Q6Q/Q6Q/Q6Q/Q6Q/BR5Q/kBQQQQQQ w - - 0 1",
+    }) |fen| {
+        try std.testing.expectError(error.InvalidPlacement, Board.fromFen(fen));
+    }
+
+    // Accepted, so the check cannot pass by rejecting everything wide: the
+    // ceiling itself — nine queens beside the starting pieces, eight promotions
+    // exactly — a third rook, and a pawn spent on a second queen.
+    for ([_][]const u8{
+        "k7/8/QQQQQQQQ/Q7/RR6/BB6/NN6/K7 w - - 0 1",
+        "k7/8/8/8/8/8/8/KRRR4 w - - 0 1",
+        "4k3/8/8/8/8/8/PPPPPPP1/QQ2K3 w - - 0 1",
+        startpos_fen,
+    }) |fen| {
+        _ = try Board.fromFen(fen);
     }
 }
 

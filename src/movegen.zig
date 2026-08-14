@@ -39,18 +39,35 @@ const Move = move.Move;
 
 // --- move list ---------------------------------------------------------------------
 
-/// 218 is the most legal moves any reachable position has — a 1964 Nenad
-/// Petrović composition reaches it, and it was proved an upper bound in 2024.
-/// 256 rounds that up to a power of two.
+/// Sized for what `Board.fromFen` accepts, not for the 218 legal moves of the
+/// widest *reachable* position (a 1964 Petrović composition, proved maximal in
+/// 2024). A FEN handed to `perft` or `epd` need not be reachable, and the 218
+/// bounds nothing about one that is not — a hand-written 24-queen record used
+/// to generate 271 moves and write past the end of this array.
+///
+/// `fromFen` now rejects material no game can produce, so the widest case left
+/// is a king, nine queens (eight promotions) and the starting rooks, bishops
+/// and knights. At each piece's mobility on an otherwise empty board that is
+/// `8 + 2 + 9*27 + 2*14 + 2*13 + 2*8 = 323`, counting two castles for the king.
+/// Spending a promotion on a pawn instead gives up 27 and returns at most 12,
+/// so the maximum sits at zero pawns. 384 clears it with room to spare, and the
+/// ceiling is loose anyway — those pieces block each other, and two independent
+/// hill climbs over positions this parser accepts found nothing past 214.
 //
 // origin: the 218 figure — Nenad Petrović's position (1964), reported by Andrew
 //         Shapira on CCC in 2005; proved maximal by Tobs40, 2024
 //         via https://www.chessprogramming.org/Chess_Position
-pub const max_moves = 256;
+pub const max_moves = 384;
 
 /// A fixed-size list, because the bound above is a fact and an allocator on this
 /// path would not pay for itself. The search will want a score beside each move;
 /// that is a 32-bit slot next to the 16-bit `Move`, and it can be added then.
+///
+/// **Declare one `undefined` and let `generate` initialise it.** `= .{}` looks
+/// harmless — `moves` carries `undefined` as its own default — but it lowers to
+/// a `memset` of the whole struct, which perft paid at every interior node:
+/// 520 bytes a node before this array was widened, and 776 after. `generate`
+/// sets `len` before anything reads it, so there is nothing to zero.
 pub const MoveList = struct {
     moves: [max_moves]Move = undefined,
     len: usize = 0,

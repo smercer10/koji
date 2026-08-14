@@ -168,6 +168,10 @@ pub const Undo = struct {
     castling: CastlingRights,
     ep: ?Square,
     halfmove: u8,
+    /// Saved rather than decremented back, because the increment saturates: at
+    /// the ceiling it is not reversible, and a FEN may start there. Free — it
+    /// lands in padding this struct already had.
+    fullmove: u16,
     /// Restored wholesale rather than recomputed: the incremental path would
     /// have to re-derive the castling delta backwards for no gain.
     hash: u64,
@@ -181,6 +185,7 @@ pub fn makeMove(b: *Board, m: Move) Undo {
         .castling = b.castling,
         .ep = b.ep,
         .halfmove = b.halfmove,
+        .fullmove = b.fullmove,
         .hash = b.hash,
     };
 
@@ -249,7 +254,10 @@ pub fn makeMove(b: *Board, m: Move) Undo {
 
     b.side = us.flip();
     b.hash ^= zobrist.side;
-    if (us == .black) b.fullmove += 1;
+    // Saturating for the same reason as the halfmove clock above: a FEN can
+    // hand us a counter already at the limit, and this one is cosmetic — it
+    // reaches the FEN output and nothing else.
+    if (us == .black) b.fullmove +|= 1;
 
     // O(64), so it is a Debug-only invariant rather than a plain assert: the
     // test and test-slow steps build ReleaseSafe, where this would turn deep
@@ -264,7 +272,6 @@ pub fn unmakeMove(b: *Board, m: Move, undo: Undo) void {
     // player who made the move.
     const us = b.side.flip();
     b.side = us;
-    if (us == .black) b.fullmove -= 1;
 
     switch (m.kind) {
         .quiet, .double_push => b.movePiece(m.to, m.from),
@@ -299,6 +306,7 @@ pub fn unmakeMove(b: *Board, m: Move, undo: Undo) void {
     b.castling = undo.castling;
     b.ep = undo.ep;
     b.halfmove = undo.halfmove;
+    b.fullmove = undo.fullmove;
     // The primitives above went on maintaining the placement keys as they
     // unwound; the saved key overwrites all of that. A handful of dead xors on a
     // value already in a register buys one code path instead of two.
@@ -640,4 +648,35 @@ test "unmake restores rights that were never lost" {
     unmakeMove(&b, rook_move, back);
     unmakeMove(&b, m, undo);
     try expectEqual(CastlingRights.all, b.castling);
+}
+
+test "the move counter saturates instead of wrapping, and unmake restores it" {
+    // A FEN may hand us a counter at the ceiling. The increment is the only
+    // arithmetic in `makeMove` a record can drive out of range, and it did:
+    // `perft 2` on this position wrapped it to zero in a release build.
+    var b = try Board.fromFen("4k3/8/8/8/8/8/8/4K3 b - - 0 65535");
+    const m = Move.fromUci(&b, "e8e7").?;
+    const undo = makeMove(&b, m);
+    try expectEqual(@as(u16, 65535), b.fullmove);
+    unmakeMove(&b, m, undo);
+    try expectEqual(@as(u16, 65535), b.fullmove);
+
+    // Below the ceiling it still counts, and only after black moves.
+    var c = try Board.fromFen("4k3/8/8/8/8/8/8/4K3 w - - 0 7");
+    const white = Move.fromUci(&c, "e1e2").?;
+    const wu = makeMove(&c, white);
+    try expectEqual(@as(u16, 7), c.fullmove);
+    const black = Move.fromUci(&c, "e8e7").?;
+    const bu = makeMove(&c, black);
+    try expectEqual(@as(u16, 8), c.fullmove);
+    unmakeMove(&c, black, bu);
+    try expectEqual(@as(u16, 7), c.fullmove);
+    unmakeMove(&c, white, wu);
+    try expectEqual(@as(u16, 7), c.fullmove);
+}
+
+test "the undo record still fits in the padding it had" {
+    // `fullmove` was added to it to make the saturating increment reversible.
+    // If this ever grows, it is on the make/unmake path and wants a measurement.
+    try expectEqual(@as(usize, 16), @sizeOf(Undo));
 }
