@@ -171,3 +171,56 @@ implementation site — restating them here is how this file stops being worth r
             return exactly the score a plain minimax returns over the same tree), deep perft, and
             12 full self-play games at depth 5 through fastchess: all terminated normally, no
             illegal move, no crash, no hang.
+
+### 2026-08-14 — Transposition table: 16MB, direct-mapped, full 64-bit key
+- branch:   feat/tt
+- type:     bench
+- result:   **-68.7% nodes at fixed depth, 2.19x wall clock**
+- bench:    22088265 (was 70586607)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions,
+            `perf stat -r 5`, ten runs each:
+
+                                        before          after      change
+              nodes               70,586,607     22,088,265      -68.7%
+              instructions    32,117,721,351 10,568,479,095      -67.1%
+              cycles          10,285,454,822  4,513,925,812      -56.1%
+              wall clock             2.231 s        1.018 s      -54.4%
+              Mnps                      31.6           21.7      -31.3%
+
+              instructions / node        455            478       +5.2%
+              cycles / node            141.4          204.4      +44.6%
+              IPC                       3.22           2.34
+              branch misses / node     0.394          0.541      +37.3%
+              cache misses / node     0.0238         0.3084       x12.9
+
+            Node counts identical every run, instructions +/-0.00%, wall clock +/-1.6%. The node
+            count is what moved and the per-node cost got worse: 3.2x less work at 45% more cycles
+            each, a probe costing a cache miss roughly every third node. Nps falling is therefore
+            expected rather than a regression to chase — and it means nps is no longer comparable
+            across this commit, only nodes-to-depth is.
+
+            Bench invariant checked, not assumed: `-Dcpu=x86_64` — no AVX2, magics instead of
+            PEXT — gives the same 22,088,265 nodes at 20.8-21.0 Mnps.
+
+            **The depth-6 bench understates this badly.** Startpos, nodes to reach each depth:
+
+              depth       base         with TT     ratio
+                  5     35,531          26,088      1.36
+                  6    280,302         213,714      1.31
+                  7  1,583,174         730,972      2.17
+                  8 22,970,811       3,892,588      5.90
+                  9 98,149,412      15,492,824      6.34
+
+            1.00x at depth 3 against 6.34x at depth 9: transpositions are what deepens, so the
+            bench is calibrated well below where the engine plays. Effective branching factor at
+            8->9 falls 4.27 -> 3.98, at 7->8 14.5 -> 5.3. Raising `bench_depth` once ordering
+            lands would make it a better predictor of Elo, not merely a bigger number.
+
+            **Why there is no Elo number.** An SPRT was started and deliberately stopped at 90
+            games: elo0=0 elo1=5 alpha=beta=0.05, 8+0.08, UHO_Lichess_4852_v1.epd, LLR 0.24,
+            +42.68 +/- 43.90, 29-18-43. koji parses `wtime`/`btime` and ignores them, searching a
+            fixed `default_depth = 6` whatever the clock says, so the two binaries are the same
+            player: 16/16 bench positions give an identical `bestmove` at `go depth 6`. Those games
+            were measuring time forfeits — 7 of the first 101 ended on the clock, which the faster
+            side loses fewer of. **Nothing is SPRT-measurable here until a `go` spends the clock.**

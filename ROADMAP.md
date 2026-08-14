@@ -54,13 +54,13 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] Negamax/alpha-beta, iterative deepening — material-only eval, repetition and fifty-move
       draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
       `bench`
-- [ ] Transposition table
+- [x] Transposition table
+- [ ] A minimal `go wtime/btime` budget — first, because until a `go` uses the clock no change
+      below it is SPRT-measurable (`docs/testlog.md`, 2026-08-14). Real time management is Phase 3
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
-- [ ] A minimal `go wtime/btime` budget — the clock is currently parsed and ignored, and a fixed
-      depth searched instead. Real time management stays in Phase 3
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
@@ -162,6 +162,11 @@ commitment to implement it.
   for duplicated pawn logic.
 - Set the en passant square only when an enemy pawn can actually capture it. koji follows standard
   FEN and sets it after every double push, which gives two otherwise identical positions different
-  Zobrist keys and splits their transposition table entries. Node counts are unaffected either way,
-  so this is unmeasurable until a TT exists — and it costs standards-conformant FEN output, which is
-  what makes it a trade rather than a fix.
+  Zobrist keys and splits their transposition table entries. Now measurable — the table landed
+  2026-08-14 — and it costs standards-conformant FEN output, which is what makes it a trade rather
+  than a fix.
+- Four transposition table entries to a cache line instead of one, replacing the worst of the four.
+  A probe already fetches the whole line and uses 16 bytes of it.
+- Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
+  playing it. Twice the entries in the same memory, against the wrong-position hits the check has to
+  catch. `isPseudoLegal` does not exist yet and is the risk, not the packing.

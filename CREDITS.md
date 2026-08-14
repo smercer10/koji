@@ -172,11 +172,31 @@ Two rules:
 > the convention as what programs "usually" do and names no one)* via
 > https://www.chessprogramming.org/Score
 
+> **mate scores rebased to the node before being stored in the table, and back on the way out** —
+> origin: *unclear (folklore; the CPW score page states the root-distance convention and names no
+> one, and the table's half of it has no page of its own)* via
+> https://www.chessprogramming.org/Score
+
 > **scoring the first repetition as a draw rather than waiting for the third** — origin: *unclear
 > (folklore; CPW: "most programs do this on the first repetition", crediting no one, and frames it
 > as a trade-off rather than a recommendation)* via https://www.chessprogramming.org/Repetitions —
 > the named credit on that page, *Ken Thompson* in Belle for detecting repetitions through the
 > transposition table, is a different technique and does not transfer to this decision
+
+> **transposition table** — origin: *Richard Greenblatt's Mac Hack VI, 1967. CPW: "first used in
+> Greenblatt's program"; published as Greenblatt, Eastlake and Crocker, "The Greenblatt Chess
+> Program", 1967* via https://www.chessprogramming.org/Transposition_Table — trail: *universal since;
+> the hashing underneath it is Zobrist's, credited separately above*
+
+> **exact / lower-bound / upper-bound entry types** — origin: *unclear (folklore; CPW states the
+> three kinds and their correspondence to PV-, all- and cut-nodes, and attributes the classification
+> to no one)* via https://www.chessprogramming.org/Transposition_Table
+
+> **depth-preferred replacement, and aging entries by search** — origin: *unclear (folklore; CPW
+> describes both with no attribution)* via https://www.chessprogramming.org/Transposition_Table —
+> the same page does name authors for the schemes koji does **not** use, and they are recorded here
+> because they are the obvious next experiment: the two-tier system to *Ken Thompson and Joe Condon*
+> (reported by Breuker et al., 1996), bucket systems to *Don Beal and Martin C. Smith*, 1996
 
 > **material piece values** — origin: *the 1/3/3/5/9 scale is Claude Shannon's, "Programming a
 > Computer for Playing Chess", 1949; CPW's table gives his row as 100/300/300/500/900. koji's exact
@@ -231,6 +251,15 @@ gh api repos/<owner>/<repo> --jq .license.spdx_id
 
 Projects relicense, so a remembered licence is a guess. There is no pre-approved or pre-excluded
 list here — the check is one command and belongs at the moment of use.
+
+**Opening books are the one thing used unlicensed, deliberately.** SPRTs run on
+`UHO_Lichess_4852_v1.epd` from OpenBench, whose repository declares no licence — but a book is test
+*input*: fetched on demand, gitignored, never redistributed, and never linked into the engine, so
+the rule above, which is about code that would have to be relicensed, does not reach it. It gets no
+technique entry either, and not by oversight: there is no implementation site to carry the
+`// origin:` half of one, and the author is genuinely unclear — the books repository has no README,
+and CPW's opening-book page credits UHO to nobody. What a book does get is the `book:` field on
+every `docs/testlog.md` entry, which is where an Elo number's provenance is actually load-bearing.
 
 ## Naming
 
