@@ -141,7 +141,18 @@ check 0 'gh issue create own'  "$(ba 'gh issue create --title t --body b')"
 # A control that obstructs real work ends up switched off, so this half matters
 # as much as the half above.
 check 0 'push a feature branch' "$(ba 'git push -u origin fix/some-branch')"
-check 0 'push, no arguments'    "$(ba 'git push')"
+# A bare push sends whatever branch the checkout is on, so this vector's answer
+# genuinely depends on that. Stating which case is being exercised keeps the
+# suite from passing on a feature branch and failing in CI on main, which is
+# exactly how the wrong block above reached main in the first place.
+branch="$(git -C "$CLAUDE_PROJECT_DIR" branch --show-current 2>/dev/null)"
+if [[ "$branch" == "main" || "$branch" == "master" ]]; then
+  check 2 'bare push, on main'  "$(ba 'git push')"
+  check 2 'push HEAD, on main'  "$(ba 'git push origin HEAD')"
+else
+  check 0 'bare push, off main' "$(ba 'git push')"
+  check 0 'push HEAD, off main' "$(ba 'git push origin HEAD')"
+fi
 check 0 'open a PR'             "$(ba 'gh pr create --title t --body b')"
 check 0 'read PR checks'        "$(ba 'gh pr checks 12 --json name,bucket')"
 check 0 'pull main ff-only'     "$(ba 'git switch main && git pull --ff-only')"
