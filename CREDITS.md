@@ -205,6 +205,20 @@ Two rules:
 > independently proposed sets spanning 1940 to 2012; there is no single "standard" refinement, only
 > named ones*
 
+> **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
+> as an "enhancement" over a single deadline and names no originator)* via
+> https://www.chessprogramming.org/Time_Management — the companion rule for spending the soft limit,
+> declining a new iteration once elapsed time has passed half of it, is equally unattributed: CPW
+> describes the ~50% threshold under Premature Termination without crediting anyone
+
+> **per-move allocation dividing by moves-to-go, and by its square root for the hard limit** —
+> origin: *Morgan Houppin, TalkChess, 20 Nov 2021* via https://talkchess.com/viewtopic.php?t=78330 —
+> trail: *dividing the clock by an assumed remaining game length is much older and unattributed
+> everywhere it appears; the linear-versus-square-root pairing, which makes the two limits converge
+> as the moves run out, is the part that traces to that post*. koji's own divisors are placeholders
+> for SPSA, and the reserve it holds back at `movestogo 1` is neither published nor folklore but a
+> judgement call — UCI cannot say whether a time control follows that move, so no source resolves it
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming

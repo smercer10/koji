@@ -280,11 +280,11 @@ const line_buffer_bytes = 1 << 20;
 /// `setoption name Hash` does not change it yet (ROADMAP Phase 2).
 const default_hash_mb = 16;
 
-/// Depth used when `go` names no limit this engine understands. A GUI at a real
-/// time control sends `wtime`/`btime`, which koji parses and ignores until the
-/// time-management box lands (ROADMAP Phase 2) — so this is what stands in for
-/// a clock, and it is deliberately shallow enough to answer promptly from any
-/// position rather than to play well.
+/// Depth used when `go` names no limit at all — not even a clock. Such a `go`
+/// states no ceiling, so honouring it literally means searching until `stop`,
+/// and a GUI that never sends one would hang the engine. koji bounds it
+/// instead. Deliberately shallow: it exists to answer promptly, not to play
+/// well.
 const default_depth = 6;
 
 /// Everything a `go` needs that outlives the command that started it. One per
@@ -450,16 +450,29 @@ fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) bool {
     return true;
 }
 
-/// `go [depth n] [nodes n] [movetime ms] [infinite] [wtime ms] ...`.
+/// `go [depth n] [nodes n] [movetime ms] [infinite] [wtime ms] [winc ms] ...`.
 ///
 /// Every limit is an independent ceiling and the search stops at whichever binds
 /// first, so `go depth 4 nodes 500000` means both and not whichever was typed
 /// last. `search.Limits` starts wide open and each token only ever narrows it —
 /// writing `max_ply` back into `depth` to mean "no depth limit" is what made
 /// this order-dependent before.
-fn parseLimits(it: *std.mem.TokenIterator(u8, .any)) search.Limits {
+///
+/// `side` is the side to move in the position the search will start from: UCI
+/// sends both players' clocks on every `go` and expects the engine to know which
+/// one is its own. Resolving it here keeps `search.zig` free of the protocol's
+/// colours; what it receives is one clock, already the right one.
+fn parseLimits(it: *std.mem.TokenIterator(u8, .any), side: board.Color) search.Limits {
     var limits: search.Limits = .{};
     var bounded = false;
+
+    // Assembled across the loop because the five clock tokens arrive in any
+    // order and mean nothing individually — a `winc` with no `wtime` is not a
+    // time control, so the clock is only attached below if a real one was named.
+    var remaining_ms: ?u64 = null;
+    var increment_ms: u64 = 0;
+    var movestogo: ?u32 = null;
+    const white = side == .white;
 
     while (it.next()) |token| {
         if (eql(token, "infinite")) {
@@ -477,20 +490,40 @@ fn parseLimits(it: *std.mem.TokenIterator(u8, .any)) search.Limits {
         } else if (eql(token, "movetime")) {
             limits.movetime_ms = parseNext(u64, it) orelse continue;
             bounded = true;
+        } else if (eql(token, "wtime") or eql(token, "btime")) {
+            // Both colours are matched and their argument consumed either way,
+            // so that the opponent's number cannot come back round the loop as
+            // a token in its own right. Only ours is kept.
+            const ms = parseNext(u64, it) orelse continue;
+            if (eql(token, if (white) "wtime" else "btime")) {
+                remaining_ms = ms;
+                bounded = true;
+            }
+        } else if (eql(token, "winc") or eql(token, "binc")) {
+            const ms = parseNext(u64, it) orelse continue;
+            if (eql(token, if (white) "winc" else "binc")) increment_ms = ms;
+        } else if (eql(token, "movestogo")) {
+            movestogo = parseNext(u32, it) orelse continue;
         }
-        // wtime/btime/winc/binc/movestogo are consumed and ignored: koji has no
-        // clock yet. ROADMAP.
     }
 
-    // A `go` carrying only a clock koji cannot read would otherwise search to
-    // `max_ply` and never come back.
+    if (remaining_ms) |ms| limits.clock = .{
+        .remaining_ms = ms,
+        .increment_ms = increment_ms,
+        .movestogo = movestogo,
+    };
+
+    // Nothing named at all — not a depth, not a clock. Without this the search
+    // runs to `max_ply` and never comes back.
     if (!bounded) limits.depth = default_depth;
     return limits;
 }
 
 fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
     e.joinSearch();
-    const limits = parseLimits(it);
+    // Read after the join: the side to move is only settled once any previous
+    // search has stopped touching the board.
+    const limits = parseLimits(it, e.searcher.b.side);
 
     // Armed here rather than inside the search: a `stop` can arrive before the
     // thread reaches its first node, and clearing it there would swallow it.
@@ -755,13 +788,13 @@ test "every go limit is a ceiling, whatever order they arrive in" {
     };
     for (both_orders) |text| {
         var it = std.mem.tokenizeAny(u8, text, " \t");
-        const limits = parseLimits(&it);
+        const limits = parseLimits(&it, .white);
         try std.testing.expectEqual(@as(u8, 4), limits.depth);
         try std.testing.expectEqual(@as(u64, 999999999), limits.nodes);
     }
 
     var deep = std.mem.tokenizeAny(u8, "depth 3 movetime 2000", " \t");
-    const mixed = parseLimits(&deep);
+    const mixed = parseLimits(&deep, .white);
     try std.testing.expectEqual(@as(u8, 3), mixed.depth);
     try std.testing.expectEqual(@as(?u64, 2000), mixed.movetime_ms);
 }
@@ -771,26 +804,71 @@ test "go depth clamps instead of wrapping" {
     // fell back to `default_depth` — the opposite of what was asked for.
     for ([_][]const u8{ "depth 1000", "depth 4294967295" }) |text| {
         var it = std.mem.tokenizeAny(u8, text, " \t");
-        try std.testing.expectEqual(@as(u8, search.max_ply), parseLimits(&it).depth);
+        try std.testing.expectEqual(@as(u8, search.max_ply), parseLimits(&it, .white).depth);
     }
 
     var junk = std.mem.tokenizeAny(u8, "depth banana", " \t");
-    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&junk).depth);
+    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&junk, .white).depth);
 }
 
 test "a go with no limit koji understands still terminates" {
-    // A clock-only `go` is what a GUI at a real time control sends. koji cannot
-    // read it yet, and must not answer by searching to `max_ply`.
-    var clock = std.mem.tokenizeAny(u8, "wtime 60000 btime 60000 winc 600 binc 600", " \t");
-    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&clock).depth);
-
+    // Only a `go` naming nothing at all falls back now. A clock-only `go` is
+    // bounded by the clock — see the test below.
     var bare = std.mem.tokenizeAny(u8, "", " \t");
-    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&bare).depth);
+    try std.testing.expectEqual(@as(u8, default_depth), parseLimits(&bare, .white).depth);
 
     // `infinite` is the one that genuinely means "no ceiling".
     var forever = std.mem.tokenizeAny(u8, "infinite", " \t");
-    const unlimited = parseLimits(&forever);
+    const unlimited = parseLimits(&forever, .white);
     try std.testing.expectEqual(@as(u8, search.max_ply), unlimited.depth);
     try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), unlimited.nodes);
     try std.testing.expectEqual(@as(?u64, null), unlimited.movetime_ms);
+    try std.testing.expectEqual(@as(?search.Clock, null), unlimited.clock);
+}
+
+test "the clock a go carries is read for the side actually to move" {
+    // One token stream, two sides, two answers. Reading the wrong colour's
+    // clock is invisible in a symmetric time control and loses games in every
+    // other one, so this is checked rather than assumed.
+    const text = "wtime 60000 btime 30000 winc 600 binc 300";
+
+    var white = std.mem.tokenizeAny(u8, text, " \t");
+    const w = parseLimits(&white, .white).clock.?;
+    try std.testing.expectEqual(@as(u64, 60000), w.remaining_ms);
+    try std.testing.expectEqual(@as(u64, 600), w.increment_ms);
+
+    var black = std.mem.tokenizeAny(u8, text, " \t");
+    const b = parseLimits(&black, .black).clock.?;
+    try std.testing.expectEqual(@as(u64, 30000), b.remaining_ms);
+    try std.testing.expectEqual(@as(u64, 300), b.increment_ms);
+}
+
+test "a clock-only go is bounded by the clock, not by default_depth" {
+    // The assertion that would have caught the bug this branch exists to fix:
+    // koji parsed the clock, discarded it, and searched `default_depth` at every
+    // time control. Two such binaries are the same player, which is why the
+    // transposition table merged with no Elo number (docs/testlog.md).
+    var clock = std.mem.tokenizeAny(u8, "wtime 60000 btime 60000 winc 600 binc 600", " \t");
+    const limits = parseLimits(&clock, .white);
+    try std.testing.expectEqual(@as(u8, search.max_ply), limits.depth);
+    try std.testing.expect(limits.clock != null);
+
+    // An increment is optional; a clock without one still binds.
+    var no_inc = std.mem.tokenizeAny(u8, "wtime 60000 btime 60000", " \t");
+    const bare_clock = parseLimits(&no_inc, .white).clock.?;
+    try std.testing.expectEqual(@as(u64, 60000), bare_clock.remaining_ms);
+    try std.testing.expectEqual(@as(u64, 0), bare_clock.increment_ms);
+    try std.testing.expectEqual(@as(?u32, null), bare_clock.movestogo);
+
+    // `movestogo` passes through untouched — the budget decides what to do with
+    // it, and a GUI that names one means it.
+    var repeating = std.mem.tokenizeAny(u8, "wtime 60000 btime 60000 movestogo 12", " \t");
+    try std.testing.expectEqual(@as(?u32, 12), parseLimits(&repeating, .white).clock.?.movestogo);
+
+    // The clock is one ceiling among several, not an override: a `go` naming
+    // both still honours the tighter depth.
+    var with_depth = std.mem.tokenizeAny(u8, "wtime 60000 depth 4", " \t");
+    const both = parseLimits(&with_depth, .white);
+    try std.testing.expectEqual(@as(u8, 4), both.depth);
+    try std.testing.expect(both.clock != null);
 }

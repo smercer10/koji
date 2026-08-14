@@ -102,12 +102,94 @@ const game_history = 256;
 /// and `bench` stays deterministic. Power of two: the check is a mask.
 const check_interval = 2048;
 
+/// A move's share of the clock, in milliseconds.
+///
+/// Two limits rather than one. The basic published allocation is a single
+/// number, and CPW presents the second bound as an enhancement on top of it —
+/// but a lone deadline can only be checked inside the search, so it always
+/// fires part-way through an iteration and throws that iteration's whole cost
+/// away. The pair lets the search decline to start work it cannot finish, and
+/// keeps the mid-flight abort for when it guessed wrong.
+///
+/// origin: unclear — folklore, no source names an originator
+/// via https://www.chessprogramming.org/Time_Management
+pub const Budget = struct {
+    /// Checked between iterations: the deepening loop will not *start* another
+    /// one past this.
+    soft_ms: u64,
+    /// Checked inside the search: abort wherever it has got to, and discard the
+    /// partial iteration.
+    hard_ms: u64,
+};
+
+/// The clock as UCI reports it, with the side to move already resolved. Turning
+/// it into a budget is time management, so it happens here rather than in the
+/// protocol layer that read the tokens.
+pub const Clock = struct {
+    remaining_ms: u64,
+    increment_ms: u64 = 0,
+    /// Moves until the next time control, when the GUI names one. UCI leaves it
+    /// out at sudden death, which is most of them.
+    movestogo: ?u32 = null,
+
+    /// Held back before anything is allocated, to cover GUI dispatch, pipe
+    /// buffering and scheduler jitter between koji deciding on a move and the
+    /// clock actually stopping. Published defaults disagree by an order of
+    /// magnitude (100ms, 200ms, ~500ms all appear) because the right value is a
+    /// property of the deployment, not of the engine — which is why it belongs
+    /// in `setoption` as `Move Overhead` rather than here. A constant until
+    /// time management lands (ROADMAP Phase 3); this value is sized for local
+    /// SPRT play over a pipe and is far too small for a networked bot.
+    const overhead_ms = 25;
+
+    /// Moves assumed left when the GUI names no `movestogo`. Sources put the
+    /// divisor anywhere from 20 to 50 and none of them justify the number, so
+    /// treat this as the SPSA knob it will become (ROADMAP Phase 5) rather than
+    /// as a constant with a reason behind it.
+    const assumed_moves = 40;
+
+    /// Splits the clock into the pair above.
+    ///
+    /// Soft divides by the moves left, hard by their square root, so the gap
+    /// between them narrows as the moves run out and closes entirely at the
+    /// last one. A fixed multiple would instead keep granting a mid-flight
+    /// search several times its share exactly when there is least to spare.
+    ///
+    /// origin: Morgan Houppin (Stash, GPL-3.0), the linear/sqrt divisor pair
+    /// via https://talkchess.com/viewtopic.php?t=78330
+    pub fn budget(c: Clock) Budget {
+        const usable = c.remaining_ms -| overhead_ms;
+
+        // Not from any source — the sources have a hole here. `movestogo 1`
+        // drives both divisors to 1 and the formula asks for every millisecond
+        // left, and UCI cannot say whether a time-control bonus follows that
+        // move or whether it is sudden death, so there is no way to tell a safe
+        // request from a fatal one. Keeping a quarter back is this project's
+        // judgement call, not a published rule; if it is ever tuned, tune it as
+        // one.
+        //
+        // Divided before multiplying: `usable * 3` overflows on a `wtime` near
+        // `maxInt(u64)`, which is a thing a fuzzer sends and a GUI does not.
+        const ceiling = usable / 4 * 3;
+
+        const moves: u64 = @max(c.movestogo orelse assumed_moves, 1);
+        // 1ms floor: below the overhead there is nothing left to divide, and a
+        // budget of zero would return before even the first iteration finished,
+        // leaving only the unsearched seed move to play.
+        const soft = @max(1, @min(usable / moves +| c.increment_ms, ceiling));
+        const hard = @max(soft, @min(usable / std.math.sqrt(moves) +| c.increment_ms, ceiling));
+
+        return .{ .soft_ms = soft, .hard_ms = hard };
+    }
+};
+
 /// What a `go` asks for. Everything is a ceiling — the search stops at whichever
 /// binds first, or when `stop` arrives.
 pub const Limits = struct {
     depth: u8 = max_ply,
     nodes: u64 = std.math.maxInt(u64),
     movetime_ms: ?u64 = null,
+    clock: ?Clock = null,
 };
 
 /// One completed iteration, handed to the reporter so `search.zig` never has to
@@ -178,6 +260,14 @@ pub const Searcher = struct {
     start: Io.Timestamp,
     io: Io,
 
+    /// The two deadlines of this search, nanoseconds from `start`, null when
+    /// nothing time-bounded it. Derived once at `search()` entry so the poll
+    /// below compares two integers rather than rebuilding a budget every
+    /// `check_interval` nodes — and so that `bench`, which sets no clock, takes
+    /// a path with no time in it at all.
+    soft_ns: ?u64,
+    hard_ns: ?u64,
+
     /// Set by another thread; read by the search every `check_interval` nodes.
     stop_flag: std.atomic.Value(bool),
     /// The search's own cached view of "we are done". Once set, every frame
@@ -195,6 +285,7 @@ pub const Searcher = struct {
         s.stopped = false;
         s.nodes = 0;
         s.limits = .{};
+        s.setDeadlines(s.limits);
         s.root_best = null;
         s.start = Io.Clock.awake.now(io);
         s.setPosition(Board.startpos);
@@ -268,8 +359,8 @@ pub const Searcher = struct {
             s.stopped = true;
             return;
         }
-        if (s.limits.movetime_ms) |ms| {
-            if (s.elapsedNs() >= ms *| std.time.ns_per_ms) s.stopped = true;
+        if (s.hard_ns) |ns| {
+            if (s.elapsedNs() >= ns) s.stopped = true;
         }
     }
 
@@ -294,12 +385,33 @@ pub const Searcher = struct {
         s.stop_flag.store(false, .monotonic);
     }
 
+    /// Resolves `limits` into the two absolute deadlines the search actually
+    /// checks. `movetime` sets only the hard one: `go movetime` is an
+    /// instruction to spend that long, so declining to start an iteration would
+    /// be answering a different question. A `go` naming both takes whichever is
+    /// tighter, like every other limit here.
+    fn setDeadlines(s: *Searcher, limits: Limits) void {
+        s.soft_ns = null;
+        s.hard_ns = null;
+
+        if (limits.clock) |c| {
+            const b = c.budget();
+            s.soft_ns = b.soft_ms *| std.time.ns_per_ms;
+            s.hard_ns = b.hard_ms *| std.time.ns_per_ms;
+        }
+        if (limits.movetime_ms) |ms| {
+            const ns = ms *| std.time.ns_per_ms;
+            s.hard_ns = @min(s.hard_ns orelse ns, ns);
+        }
+    }
+
     /// Iterative deepening. Returns the best move of the deepest iteration that
     /// *finished* — a partial iteration is discarded whole rather than mined for
     /// a better move, because its scores were produced under a window the abort
     /// invalidated.
     pub fn search(s: *Searcher, limits: Limits, reporter: ?Reporter) Result {
         s.limits = limits;
+        s.setDeadlines(limits);
         s.nodes = 0;
         s.root_best = null;
         // Private to this thread, unlike `stop_flag`, so resetting it here is
@@ -345,6 +457,20 @@ pub const Searcher = struct {
                 .hashfull = s.tt.hashfull(),
                 .pv = s.pv[0][0..s.pv_len[0]],
             });
+
+            // The doubling form, not `elapsed >= soft`: the next iteration is
+            // assumed to cost at least as much as everything spent so far, so
+            // this stops at roughly half the soft budget. Plain `>=` would
+            // leave the soft limit almost inert — an iteration finishing just
+            // under it starts another that this engine measures at ~5x the
+            // cost (EBF 5.7 at 6->7, docs/testlog.md 2026-08-14), so every move
+            // would run to the hard deadline and the pair would collapse back
+            // into the single limit it exists to improve on.
+            //
+            // A guess about branching, not a guarantee, and unattributed in
+            // every source: worth re-measuring once move ordering lands and the
+            // branching factor it is guessing about changes.
+            if (s.soft_ns) |ns| if (s.elapsedNs() *| 2 >= ns) break;
         }
 
         result.nodes = s.nodes;
@@ -877,6 +1003,99 @@ test "a stop request is honoured and still answers with a legal move" {
     // fails here on the count rather than by running until someone kills it.
     try testing.expect(result.nodes < 100_000);
 
+    var list: MoveList = undefined;
+    movegen.generate(&s.b, &list);
+    var legal = false;
+    for (list.slice()) |m| {
+        if (@as(u16, @bitCast(m)) == @as(u16, @bitCast(result.move.?))) legal = true;
+    }
+    try testing.expect(legal);
+}
+
+/// Every clock the budget tests below run over. Spread deliberately across the
+/// regimes that behave differently: sudden death with and without increment,
+/// a GUI-supplied `movestogo` at both ends of its range, an increment larger
+/// than the clock it is added to, and the low-time cases where the arithmetic
+/// is at risk of underflowing.
+const clocks = [_]Clock{
+    .{ .remaining_ms = 8000, .increment_ms = 80 }, // 8+0.08, the SPRT control
+    .{ .remaining_ms = 300_000, .increment_ms = 0 },
+    .{ .remaining_ms = 300_000, .increment_ms = 3000 },
+    .{ .remaining_ms = 60_000, .increment_ms = 0, .movestogo = 40 },
+    .{ .remaining_ms = 60_000, .increment_ms = 0, .movestogo = 1 },
+    .{ .remaining_ms = 1000, .increment_ms = 10_000 }, // increment dwarfs the clock
+    .{ .remaining_ms = 100, .increment_ms = 0 },
+    .{ .remaining_ms = 26, .increment_ms = 0 }, // one millisecond of usable time
+    .{ .remaining_ms = 25, .increment_ms = 0 }, // exactly the overhead
+    .{ .remaining_ms = 1, .increment_ms = 0 },
+    .{ .remaining_ms = 0, .increment_ms = 0 }, // already flagging
+};
+
+test "a budget is ordered, positive, and never spends a clock it does not have" {
+    for (clocks) |c| {
+        const b = c.budget();
+
+        // Starting an iteration you cannot finish is the thing the soft limit
+        // exists to prevent, so it can never be the later of the two.
+        try testing.expect(b.soft_ms <= b.hard_ms);
+
+        // Zero would mean returning before the first iteration completes, and
+        // the seeded root move is a legal move but not a searched one.
+        try testing.expect(b.soft_ms >= 1);
+
+        // Below the overhead there is nothing left to allocate and the engine
+        // answers with the 1ms floor above, which is legitimately more than the
+        // clock holds. Everywhere else, spending more than the clock is a flag.
+        if (c.remaining_ms > Clock.overhead_ms) {
+            try testing.expect(b.hard_ms <= c.remaining_ms);
+        }
+    }
+}
+
+test "the last move before a time control keeps a reserve" {
+    // `movestogo 1` drives both divisors to 1, so the formula on its own asks
+    // for the entire remaining clock. UCI cannot say whether a bonus follows
+    // that move, so the reserve is the only thing standing between the engine
+    // and a flag. See the `ceiling` comment on `Clock.budget`.
+    const c: Clock = .{ .remaining_ms = 60_000, .movestogo = 1 };
+    const b = c.budget();
+    const usable = c.remaining_ms - Clock.overhead_ms;
+
+    try testing.expect(b.hard_ms < usable);
+    // Not merely "less than": a reserve that rounds to nothing is not a reserve.
+    try testing.expect(usable - b.hard_ms > usable / 5);
+}
+
+test "a budget grows with the clock and never shrinks" {
+    // The property that makes the budget safe under repeated application: as a
+    // game burns down the clock the allocation follows it down, and no step of
+    // that descent may hand back *more* time than the step before.
+    var previous: u64 = 0;
+    var remaining: u64 = 0;
+    while (remaining <= 300_000) : (remaining += 137) {
+        const b = (Clock{ .remaining_ms = remaining, .increment_ms = 50 }).budget();
+        try testing.expect(b.hard_ms >= previous);
+        previous = b.hard_ms;
+    }
+}
+
+test "a clock alone stops an otherwise unbounded search" {
+    const s = try searcher(null);
+    defer testing.allocator.destroy(s);
+
+    // No depth ceiling at all — the clock is the only thing that can end this,
+    // which is the whole point. The node limit is a backstop so that a budget
+    // that never binds fails the assertion below instead of hanging the suite.
+    const backstop = 20_000_000;
+    const result = s.search(.{
+        .nodes = backstop,
+        .clock = .{ .remaining_ms = 200, .increment_ms = 0 },
+    }, null);
+
+    try testing.expect(result.nodes < backstop);
+    try testing.expect(result.move != null);
+
+    // A search cut short still owes the caller a move it is legal to play.
     var list: MoveList = undefined;
     movegen.generate(&s.b, &list);
     var legal = false;
