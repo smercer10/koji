@@ -51,13 +51,22 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 
 ## Phase 2 — Search + HCE
 
-- [ ] Negamax/alpha-beta, iterative deepening
+- [x] Negamax/alpha-beta, iterative deepening — with a material-only eval to score the leaves,
+      `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` making `bench` a real
+      number. Draw detection (repetition, fifty-move) ships here rather than later: it is the
+      difference between a correct score and a wrong one, and the game history it reads is what
+      the `position ... moves` parser already builds
 - [ ] Transposition table
 - [ ] Quiescence search
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
-- [ ] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
+- [ ] A minimal `go wtime/btime` budget, so a game finishes. koji parses the clock and ignores
+      it, searching `default_depth` instead, which forfeits on time in a real game. The exit
+      criterion below depends on a clock that the roadmap only schedules in Phase 3, so this is
+      the crude stand-in; *time management* — soft and hard bounds, scaling by instability —
+      stays there
+- [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
 **Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a

@@ -128,3 +128,50 @@ implementation site — restating them here is how this file stops being worth r
 
             The finding is about the idiom, not the line: `= .{}` on any struct with a large
             `undefined` field does this, and Phase 2's search stack is that shape.
+
+### 2026-08-14 — Negamax + alpha-beta + iterative deepening: the first real bench
+- branch:   feat/search
+- type:     bench
+- result:   baseline — the first entry that is not `bench: 0`
+- bench:    70586607
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    First search, so this is a baseline to defend rather than a comparison. Material-only
+            eval, no quiescence, no transposition table, and no ordering beyond the previous
+            iteration's best move at the root — each of those is a later box, and each is measured
+            against this line.
+
+            `testdata/bench.epd`, 16 positions, depth 6, `perf stat -r 5`:
+
+              nodes                    70,586,607   (+/-0.00%, identical all 5 runs)
+              instructions         32,117,721,351   (+/-0.00%)
+              cycles               10,285,454,822   (+/-1.24%)
+              wall clock                  2.307 s   (+/-1.30%)
+              Mnps                           30.6
+
+              instructions / node             455
+              cycles / node                 145.7      IPC 3.12
+              branch misses / node          0.395
+              cache misses / node          0.0274
+
+            **The never-regress figure is instructions per node**, for the reason the movegen
+            baseline gave: WSL2 cannot resolve a wall-clock change under ~5%, and instructions
+            repeat to +/-0.00%.
+
+            **Bench invariant checked, not assumed**: `-Dcpu=x86_64` — no AVX2, and the magic path
+            instead of PEXT — gives *the same* 70,586,607 nodes at 27.2-27.9 Mnps. Identical work,
+            ~12% slower to do it.
+
+            Effective branching factor, startpos, from the `info` lines: 16.2 at depth 4->5, 7.9 at
+            5->6, 5.7 at 6->7. With a branching factor near 35 that last figure means alpha-beta is
+            already doing most of its job at the root and very little of it inside the tree, which
+            is exactly the gap MVV-LVA and killers exist to close. Expect the bench number to
+            *fall* sharply when ordering lands, and `bench_depth` to rise to compensate.
+
+            Branch misses at 0.395/node are the number to watch: the move loop is unordered, so
+            the cutoff is unpredictable by construction.
+
+            Not an SPRT — there is no previous version that plays, so there is nothing to play
+            against. Correctness was gated instead on the minimax-equivalence test (alpha-beta must
+            return exactly the score a plain minimax returns over the same tree), deep perft, and
+            12 full self-play games at depth 5 through fastchess: all terminated normally, no
+            illegal move, no crash, no hang.

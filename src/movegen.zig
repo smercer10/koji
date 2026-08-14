@@ -119,6 +119,18 @@ fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard {
     return set;
 }
 
+/// Whether the side to move stands in check.
+///
+/// `generate` computes this for itself and cannot hand it back without paying
+/// for the answer at every node that never asks. The search asks in exactly one
+/// place — an empty move list, where the difference between checkmate and
+/// stalemate is the difference between losing and drawing — so it pays there.
+pub fn inCheck(b: *const Board) bool {
+    const us = b.side;
+    const ksq = lsb(b.pieces(us, .king));
+    return attackersTo(b, ksq, b.occupancy()) & b.by_color[@intFromEnum(us.flip())] != 0;
+}
+
 // --- position preconditions -----------------------------------------------------------
 
 pub const IllegalPosition = error{IllegalPosition};

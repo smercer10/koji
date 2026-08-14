@@ -133,12 +133,17 @@ fn engineModule(b: *std.Build, opts: ModuleOptions) *std.Build.Module {
     });
     mod.addOptions("build_options", options);
 
-    // The perft oracle, reachable from `@embedFile("perft_epd")`. It lives outside
-    // src/, and @embedFile resolves relative to the module root, so a bare
+    // Data files reachable from `@embedFile`. They live outside src/, and
+    // @embedFile resolves relative to the module root, so a bare
     // "../testdata/perft.epd" is rejected as an embed outside the package path.
-    // Naming it as an import is the way across that boundary. Only tests read it;
-    // an unreferenced import costs the shipped binary nothing.
+    // Naming them as imports is the way across that boundary.
+    //
+    // The perft oracle is read only by tests, and an unreferenced import costs
+    // the shipped binary nothing. The bench set is different: `koji bench` reads
+    // it at runtime, so it is genuinely in the binary — a few KB, and the
+    // alternative is a bench that cannot run without its working directory.
     mod.addAnonymousImport("perft_epd", .{ .root_source_file = b.path("testdata/perft.epd") });
+    mod.addAnonymousImport("bench_epd", .{ .root_source_file = b.path("testdata/bench.epd") });
 
     return mod;
 }
