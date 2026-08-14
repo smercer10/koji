@@ -15,8 +15,10 @@
 //!           keeps the hardcoded set provably in sync with the search.
 //! The scheme is fixed at comptime from the build target (see `active_scheme`):
 //! no per-lookup dispatch in what will be the hottest load in the engine. Tables
-//! are "fancy" (per-square sized) rather than plain: same measured speed on
-//! modern hardware (Purves, 2010), 840KB instead of 2.25MB.
+//! are "fancy" (per-square sized) rather than plain — 840KB instead of 2.25MB.
+//! Whether that costs anything is **untested here**: plain tables have never
+//! been built to compare against, so the size is the only measured half of the
+//! trade. ROADMAP files the comparison under candidate ideas.
 //
 // origin: magic bitboards — Lasse Hansen, CCC, 14 Jun 2006
 //         via https://www.chessprogramming.org/Magic_Bitboards

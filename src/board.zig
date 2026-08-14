@@ -479,16 +479,15 @@ pub const Board = struct {
             if (b.pieceAt(r.rook) != Piece.make(r.color, .rook)) return error.InvalidCastling;
         }
 
-        // The fourth: material a game can actually produce. `movegen.MoveList`
-        // is a fixed array whose size is derived from this check — without it a
-        // record can write two dozen queens onto the board and generate more
-        // moves than the array holds, which in a release build is a write past
-        // its end rather than a failed assert. A side promotes at most its
-        // eight pawns, so every piece beyond the starting complement spends one
-        // of them, and the pawns still on the board spend the rest.
+        // The fourth: material a game can actually produce. `movegen.max_moves`
+        // is derived from this check — without it a record can put two dozen
+        // queens on the board and generate more moves than the move list holds,
+        // which in a release build is a write past its end. A side promotes at
+        // most its eight pawns, so every piece beyond the starting complement
+        // spends one, and the pawns still on the board spend the rest.
         for ([_]Color{ .white, .black }) |c| {
-            // `spent` starts at the pawns still on the board and only grows, so
-            // nine pawns is already caught by the one test at the end.
+            // Starts at the pawns and only grows, so nine pawns is caught by the
+            // one test at the end.
             var spent = @popCount(b.pieces(c, .pawn));
             inline for ([_]struct { t: PieceType, base: u7 }{
                 .{ .t = .queen, .base = 1 },

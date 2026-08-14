@@ -6,13 +6,12 @@
 # hook scans command text -- a probe typed into a session blocks itself. Engine
 # names are placeholders; no real project is referenced and nothing is fetched.
 #
-# Two properties this suite is built for, both learned by finding it lacked them:
+# Two properties, both learned by finding the suite lacked them:
 #
 #   1. Every rule is covered *independently*. A vector ending in .cpp is caught
-#      by the source-extension backstop no matter what the host rules say, so a
-#      suite made of those reports "all vectors pass" against a guard with whole
-#      rules deleted -- verified by mutation, and it did. Each host and path rule
-#      below therefore gets a vector with no source extension on it.
+#      by the extension backstop whatever the host rules say, so a suite of those
+#      passes against a guard with whole rules deleted. Each rule below gets a
+#      vector carrying no source extension.
 #   2. The must-pass half is a test, not a courtesy. A guard that blocks ordinary
 #      work gets switched off, which protects nothing.
 set -uo pipefail

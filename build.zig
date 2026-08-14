@@ -64,20 +64,16 @@ pub fn build(b: *std.Build) void {
 
     // Tests *default* to ReleaseSafe: safety checks are the point of a test run,
     // but perft at Debug speed would blow the budget that makes `zig build test`
-    // cheap enough to gate every turn on (see CLAUDE.md for the figure).
-    //
-    // An explicit -Doptimize still wins, and has to. Debug is the only mode
-    // where make/unmake's `consistent()` invariant runs at all, and while this
-    // was hardcoded there was no build in the project that could reach it — the
-    // flag was accepted, ignored, and the miss looked like a cache hit.
+    // cheap enough to gate every turn on (CLAUDE.md carries the figure). An
+    // explicit -Doptimize wins, and has to: Debug is the only mode where
+    // make/unmake's `consistent()` invariant runs at all, and hardcoding this
+    // left no build in the project that could reach it.
     const test_optimize = requested_optimize orelse .ReleaseSafe;
 
     const test_step = b.step("test", "Unit tests + shallow perft (fast; gates every turn)");
     // A test build's root is the test runner, not `main`, so Zig never analyses
-    // what only `main` reaches — `zig build test` stayed green through a call in
-    // `epdCommand` that did not compile. Depending on the exe makes the gate
-    // mean "this builds and passes" rather than only the second half. Warm, the
-    // compile is already cached and costs ~0.03s.
+    // what only `main` reaches: `zig build test` stayed green through a call in
+    // `epdCommand` that did not compile. Warm, the exe is already cached.
     test_step.dependOn(&exe.step);
     const fast_tests = b.addTest(.{
         .root_module = engineModule(b, .{

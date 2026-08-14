@@ -19,6 +19,10 @@
 // origin: divide — unclear (folklore; CPW presents it as standard debugging
 //         practice with no attributed author)
 //         via https://www.chessprogramming.org/Perft
+// origin: bulk counting (returning the move count at depth 1 instead of playing
+//         the last ply) — unclear (folklore; CPW presents it as standard perft
+//         practice and names no author)
+//         via https://www.chessprogramming.org/Perft
 
 const std = @import("std");
 const Io = std.Io;
@@ -58,11 +62,9 @@ pub fn perft(b: *Board, depth: u8) u64 {
 /// Perft split by root move: one `<uci> <nodes>` line each, then a blank line and
 /// the total. Comparing two divides is how a wrong node count is localised.
 pub fn divide(b: *Board, depth: u8, w: *Io.Writer) Io.Writer.Error!u64 {
-    // At depth 0 the tree is the root alone: no move is played, so there is no
-    // root move to attribute anything to, and the one leaf is the position
-    // itself. Listing every move against a count of 0 and totalling 0 would
-    // contradict `perft(b, 0) == 1` — and a divide that disagrees with perft at
-    // the same depth is useless for the one job it has.
+    // No move is played at depth 0, so there is no root move to attribute the
+    // one leaf to. It has to total 1 regardless: a divide that disagrees with
+    // `perft` at the same depth is useless for the one job it has.
     if (depth == 0) {
         try w.print("\n1 nodes\n", .{});
         return 1;
@@ -86,47 +88,39 @@ pub fn divide(b: *Board, depth: u8, w: *Io.Writer) Io.Writer.Error!u64 {
 
 // --- EPD suite ----------------------------------------------------------------------
 
-/// What a single perft in the suite is allowed to cost.
+/// What a single perft in the suite is allowed to cost. Both caps are needed:
+/// the node cap reads the count the *record* claims, so a mistyped `;D6 1` slips
+/// under any budget and then runs a full depth-6 perft. Depth is what bounds the
+/// work; expected nodes is what keeps the set of work identical on every machine.
 pub const Limit = struct {
-    /// Skip any operation claiming more leaves than this. Deciding on the
-    /// expected count rather than a timer keeps the set of work identical on
-    /// every machine.
     nodes: u64,
-    /// Skip any operation deeper than this. The node cap alone bounds nothing,
-    /// because it reads the count the *record* claims: a mistyped `;D6 1` passes
-    /// a 100k budget and then runs a full depth-6 perft. Depth is the parameter
-    /// that actually bounds the work, so both caps are needed.
     depth: u8,
 
     pub const unlimited: Limit = .{ .nodes = std.math.maxInt(u64), .depth = std.math.maxInt(u8) };
 };
 
 pub const Result = struct {
-    /// Records whose FEN parsed. One that does not is counted in `failed`.
+    /// Records whose FEN parsed; one that does not is counted in `failed`.
     positions: usize = 0,
-    /// Well-formed `;D<n> <nodes>` operations seen. `ran + skipped` must equal
-    /// this — that is the invariant stopping an operation from disappearing
-    /// silently, which is how a suite can report success having checked nothing.
+    /// Well-formed `;D<n> <nodes>` operations seen. **`ran + skipped` must equal
+    /// this**, which is what stops an operation from disappearing silently and
+    /// the suite from reporting success having checked nothing.
     ops: usize = 0,
-    /// Operations actually run, including those that then disagreed.
+    /// Run, including those that then disagreed.
     ran: usize = 0,
     skipped: usize = 0,
-    /// Anything wrong: a count mismatch, a record whose FEN will not parse, or
-    /// an operation that looks like `;D<n>` and then does not parse. Every one
-    /// is reported through `w` as well as counted.
+    /// Anything wrong: a count mismatch, an unusable FEN, or a `;D<n>` that does
+    /// not parse. Each is reported through `w` as well as counted.
     failed: usize = 0,
     nodes: u64 = 0,
 };
 
 /// Runs every `;D<n> <nodes>` operation in an EPD text and checks each count.
+/// `limit` is what lets the fast and slow test steps share this code instead of
+/// keeping a second, drifting copy of the position list.
 ///
-/// `limit` is what lets the fast test step share this code with the slow one
-/// instead of keeping a second, drifting copy of the position list.
-///
-/// `w` receives a line per position when given; failures are reported through it
-/// and counted in the result either way. A bad record is counted and stepped
-/// over rather than abandoning the rest of the file — one composed position in a
-/// published suite should not hide every position after it.
+/// `w` receives a line per position when given. A bad record is counted and
+/// stepped over rather than abandoning the file after it.
 pub fn runSuite(text: []const u8, limit: Limit, w: ?*Io.Writer) !Result {
     var result: Result = .{};
 
@@ -158,9 +152,9 @@ pub fn runSuite(text: []const u8, limit: Limit, w: ?*Io.Writer) !Result {
             if (!std.ascii.isDigit(op[1])) continue;
 
             // Past that guard the operation is ours, so a field that will not
-            // parse is a fault in the file rather than something to step over
-            // quietly — dropping it would leave a count unchecked and every
-            // counter untouched, which reads exactly like success.
+            // parse is a fault in the file. Stepping over it quietly leaves a
+            // count unchecked with every counter untouched, which reads as
+            // success.
             var fields = std.mem.tokenizeAny(u8, op[1..], " \t");
             const depth = parseField(u8, fields.next()) orelse {
                 result.failed += 1;
@@ -342,16 +336,13 @@ test "divide splits the count by root move and sums back to it" {
     try expectEqual(@as(usize, 20 + 2), lines);
 }
 
-/// `perft`, with the board's own invariants checked at every node: the
-/// incrementally maintained Zobrist key against a full recomputation, and the
-/// mailbox against the bitboards.
+/// `perft`, checking at every node that the incrementally maintained Zobrist key
+/// still matches a full recomputation and that the mailbox matches the bitboards.
 ///
-/// Test-only, and deliberately not folded into `perft` — both checks are O(64),
-/// which would cost more than the search they guard. But nothing else makes
-/// them at scale: `perft` compares one number at the root, and the fast-vs-slow
-/// generator agreement in `movegen.zig` never reads the hash at all. A wrong
-/// castling-rights or en passant xor changes no node count, so it would survive
-/// the entire suite and surface later as a transposition-table collision.
+/// Test-only: both checks are O(64), too expensive for `perft` itself. Nothing
+/// else makes them at scale, and a wrong castling-rights or en passant xor
+/// changes no node count — it would survive the whole suite and surface later as
+/// a transposition-table collision.
 fn perftChecked(b: *Board, depth: u8) !u64 {
     try expectEqual(b.computeHash(), b.hash);
     try expect(b.consistent());

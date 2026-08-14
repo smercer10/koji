@@ -129,6 +129,10 @@ Two rules:
 > 1995. **divide** is presented there as standard debugging practice with no attributed author.
 > Position 2 of the standard suite is credited to Peter McKenzie, position 6 to Steven Edwards*
 
+> **bulk counting** — origin: *unclear (folklore; CPW presents returning the depth-1 move count in
+> place of playing the last ply as standard perft practice, and names no author)* via
+> https://www.chessprogramming.org/Perft
+
 > **218 as the maximum number of legal moves** — origin: *a 1964 Nenad Petrović composition, reported
 > by Andrew Shapira on CCC in 2005; proved an upper bound by Tobs40, 2024* via
 > https://www.chessprogramming.org/Chess_Position — koji's move list is sized 256, the next power of
@@ -153,9 +157,10 @@ When a technique cannot be implemented from available descriptions, the rule is 
 human, not to fetch the source instead.
 
 This is enforced by the tooling rather than asserted:
-[`.claude/hooks/guard.sh`](.claude/hooks/guard.sh) blocks fetches that resolve to source — raw file
-and archive hosts, GitHub's code browser, commit pages, and a pull request's diff in any form —
-while leaving the discussion on that same pull request reachable
+[`.claude/hooks/guard.sh`](.claude/hooks/guard.sh) blocks fetches that resolve to source — the code
+browser on any forge, raw file and archive hosts, commit pages, a pull request's diff in any form,
+and the API endpoints that return a file body — while leaving the discussion on that same pull
+request reachable
 (`.claude/hooks/guard_test.sh` holds the vectors). The researcher agent
 ([`.claude/agents/technique-researcher.md`](.claude/agents/technique-researcher.md)) and the allowlist in
 [`.claude/settings.json`](.claude/settings.json) narrow it further.
