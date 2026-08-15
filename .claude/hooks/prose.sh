@@ -76,19 +76,21 @@ fi
 
 # --- ROADMAP.md ---------------------------------------------------------------
 #
-# 34 of the 42 items on main are one line and the longest is five, which is the
-# budget: a check that scolds about content already on main gets ignored.
+# The task list says what to build, not why. 36 of the 45 items are one line and
+# the rest are two, which is the budget. **This is the checklist only** — the
+# candidate list under it is prose by design and is deliberately not measured.
 if [[ -f ROADMAP.md ]]; then
   long="$(awk '
-    /^- \[[ x]\]/ { if (n > 5) printf "  %s (%d lines)\n", substr(item, 1, 60), n
+    /^- \[[ x]\]/ { if (n > 2) printf "  %s (%d lines)\n", substr(item, 1, 60), n
                     item = $0; n = 1; next }
     /^      /     { if (item != "") n++; next }
-                  { if (item != "" && n > 5) printf "  %s (%d lines)\n", substr(item, 1, 60), n
+                  { if (item != "" && n > 2) printf "  %s (%d lines)\n", substr(item, 1, 60), n
                     item = ""; n = 0 }
-    END           { if (item != "" && n > 5) printf "  %s (%d lines)\n", substr(item, 1, 60), n }
+    END           { if (item != "" && n > 2) printf "  %s (%d lines)\n", substr(item, 1, 60), n }
   ' ROADMAP.md)"
   if [[ -n "$long" ]]; then
-    say "ROADMAP: item over 5 lines — say it in one, or make the case for the rest:"
+    say "ROADMAP: item over 2 lines — the reasoning goes in the candidate list,"
+    say "  docs/testlog.md or the commit, not in the checklist:"
     say "$long"
   fi
 fi

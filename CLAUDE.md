@@ -69,7 +69,8 @@ titles share one style: `<type>: <what>`, lowercase type from `feat/fix/perf/doc
 `/code-review` on the branch before merging — only for changes to the TT, threading/atomics,
 make/unmake, or the NNUE accumulator. Everywhere else SPRT is the authority.
 `/code-review max <paths>` once per phase, over the merged and tagged subsystem, plus `/audit` for
-the docs and `.claude/` setup. Why a decision was made lives in a comment where it is enforced —
+the docs and `.claude/` setup — weight that review toward `.claude/`, where every real defect so
+far has been found. Why a decision was made lives in a comment where it is enforced —
 read it before removing a rule that looks like an obstacle.
 
 ## Delegation

@@ -28,22 +28,16 @@ options. **Met — Phase 0 complete.**
 - [x] CI on push and PR: format, `zig build test`, release build, OpenBench `make` contract —
       first, so everything after it is remotely checked
 - [x] Protection on `main`: ruleset requiring the `ci` check, linear history, no deletion and
-      no force-push. Repository admin bypasses, so an override is possible but deliberate —
-      and since agent sessions push with that same token, the ruleset stops accidents, not us
+      no force-push. Admin bypasses, so an override stays possible but deliberate
 - [x] Bitboards + mailbox
 - [x] PEXT magics with a plain-magic fallback for non-PEXT targets
 - [x] FEN parsing and output, tolerant of EPD records so the perft oracle parses unchanged
-- [x] Move encoding + make/unmake + Zobrist, fixed seed — all three ship together. A `Move` with
-      no consumer is untestable, and before a transposition table exists Zobrist's only consumer is
-      make/unmake: splitting it out would mean a branch whose entire test surface is the previous
-      branch's code, plus a second pass threading xors back through every arm of make/unmake
+- [x] Move encoding + make/unmake + Zobrist, fixed seed — all three ship together, since until
+      a transposition table exists Zobrist's only consumer is make/unmake
 - [x] Legal move generation: leapers, pawns, castling, check and pin legality, with the `perft`
       driver and `divide` run over `testdata/perft.epd` from `test` and `test-slow`
-- [x] Phase 0 shipped without its phase-boundary code review. Include everything it
-      wrote in Phase 1's `/code-review max`: `src/main.zig`, `build.zig`, `Makefile`,
-      `.claude/hooks/` and `.claude/settings.json` — weight the review toward `.claude/`,
-      where every real defect so far has been found (settings.json at Phase 0; guard.sh
-      bypasses and an unresolvable /sprt command in the pre-Phase-1 review)
+- [x] Phase 0 shipped without its phase-boundary code review; everything it wrote folded into
+      Phase 1's `/code-review max`, weighted toward `.claude/` where the defects were
 
 **Exit criterion:** perft exact on every position in `testdata/perft.epd`, at every depth that file
 carries; instructions per `generate()` call recorded as the never-regress baseline, *not* NPS
@@ -52,16 +46,13 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 ## Phase 2 — Search + HCE
 
 - [x] Negamax/alpha-beta, iterative deepening — material-only eval, repetition and fifty-move
-      draws, `position`/`go`/`stop` on a search thread, and `testdata/bench.epd` behind a real
-      `bench`
+      draws, `position`/`go`/`stop` on a search thread, and `bench` over `testdata/bench.epd`
 - [x] Transposition table
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
 - [x] Quiescence search
 - [x] MVV-LVA move ordering, in the main search as well as in quiescence
-- [x] SEE, splitting the captures into winning and losing — shipped together with not searching
-      the losing ones in quiescence, which is where the published evidence puts the effect and
-      where ordering alone can buy nothing, since quiescence has no depth limit to stop it
-      searching every capture anyway
+- [x] SEE, splitting the captures into winning and losing, and not searching the losing ones
+      in quiescence
 - [ ] Killer moves
 - [ ] History heuristic
 - [ ] PSQT + tapered evaluation
@@ -183,14 +174,13 @@ commitment to implement it.
   victim-only ordering leaves (testlog, 2026-08-15) — and nodes are not Elo, so this is an SPRT
   at `elo0=-5 elo1=0`.
 - Losing captures ahead of the quiets rather than behind them. CPW records both placements as
-  common; koji shipped the mainstream one, and the case for the other is that a capture stays
-  tactically loaded even when SEE calls it losing — while koji's quiet band is unordered zeros
-  until killers and history land, so "behind the quiets" currently means behind thirty arbitrary
-  moves. Worth retesting *after* history lands, when the band it is being placed against actually
-  means something.
-- Ablate SEE's two halves against each other. They shipped together and the SPRT covers the pair;
-  the node split is recorded (testlog, 2026-08-15) but nodes are not Elo. Re-run once killers and
-  history have changed the ordering around them.
+  common; the case for the other one is that a capture stays tactically loaded even when SEE calls
+  it losing, and koji's quiet band is unordered zeros until killers and history land — so "behind
+  the quiets" currently means behind thirty arbitrary moves. Retest once history gives that band
+  an order worth ranking against.
+- Ablate SEE's ordering split against its quiescence pruning. They shipped under one SPRT, stopped
+  inconclusive at +1.94 +/- 4.88 (testlog, 2026-08-15); a 1.56x time-to-depth win returning ~2 Elo
+  says one half is giving back most of what the other earns, and nodes cannot say which.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
