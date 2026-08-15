@@ -57,8 +57,9 @@ const Move = move.Move;
 pub const max_moves = 384;
 
 /// A fixed-size list, because the bound above is a fact and an allocator on this
-/// path would not pay for itself. The search will want a score beside each move;
-/// that is a 32-bit slot next to the 16-bit `Move`, and it can be added then.
+/// path would not pay for itself. The search's ordering scores sit *beside* this
+/// in a parallel array (`Ordered`, `search.zig`) rather than interleaved with the
+/// moves, so that perft and the oracle carry no score they never read.
 ///
 /// **Declare one `undefined` and let `generate` initialise it.** `= .{}` looks
 /// harmless — `moves` carries `undefined` as its own default — but it lowers to

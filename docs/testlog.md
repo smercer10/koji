@@ -358,12 +358,16 @@ implementation site — restating them here is how this file stops being worth r
               shipped, both nodes         4,737,990      -80.5%
               rank MVV, no attacker term  5,431,917      -77.7%
 
-            Row 2 leaves quiescence on the victim-only sort it already had, so the main
-            search's own ordering is 79.6% of the nodes on its own and quiescence moving
-            onto the shared scorer is the remaining 4.8%. Wall clock 1.90s -> 0.44s; nps
-            12.9M -> 10.7M, which is the scoring pass being paid at every node.
+            Row 2 leaves quiescence on the victim-only sort it already had, so ordering
+            the main search accounts for 79.6 of the 80.5 points and quiescence moving
+            onto the shared scorer for the last 0.9. Stated against its own row instead,
+            quiescence takes 4.8% off what the main search alone had left.
 
-            **The attacker term is worth 12.8% of the nodes here** (row 4 against row 3),
+            `perf stat -r 5`: 1.8826s +/- 0.07% -> 0.4547s +/- 0.56%, a 4.14x speedup on
+            13.0M -> 10.6M nps. The nps is down because the scoring pass is paid at every
+            node; the node count is what carries the win.
+
+            **The attacker term takes 12.8% off victim-only ordering** (row 4 to row 3),
             which is not what the published Elo evidence predicts: Stockfish removed LVA
             in 2015 as a simplification that passed SPRT at both time controls, its author
             estimating the whole term at half an Elo. Nodes are not Elo and this branch

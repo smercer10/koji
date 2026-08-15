@@ -2,9 +2,9 @@
 //! transposition table, ending in a quiescence search rather than at a static
 //! score.
 //!
-//! Deliberately nothing else. Move ordering beyond "the table's move, then the
-//! previous iteration's best at the root" is its own roadmap box, and is
-//! measured against what this file does.
+//! Moves are ordered by MVV-LVA behind the table's move. Deliberately nothing
+//! else: SEE, killers and history are their own roadmap boxes and are measured
+//! against what this file does.
 //!
 //! What this file *is* responsible for is being right. Alpha-beta is supposed to
 //! return exactly the score a plain minimax returns over the same tree — it
@@ -540,10 +540,16 @@ pub const Searcher = struct {
         var best = -infinity;
         // Every stored entry carries a move, including a fail-low node's: the
         // move that scored highest is still the one to try first next time.
-        var best_move = o.list.moves[0];
+        //
+        // **Seeded after the first selection, not from `moves[0]`.** Nothing
+        // reaches the store without raising `best` today, so this is currently a
+        // dead store — but the moment a pruning `continue` enters the loop below,
+        // an unselected seed would name whatever generation happened to emit
+        // first, and the table would hand that back as the node's best move.
+        var best_move = o.next(0);
 
         for (0..o.list.len) |i| {
-            const m = o.next(i);
+            const m = if (i == 0) best_move else o.next(i);
             const undo = move.makeMove(&s.b, m);
             s.pushHistory();
 
@@ -720,8 +726,8 @@ const tier: Score = 6;
 
 /// The ordering move outranks everything, every capture and promotion outranks
 /// every quiet, and quiets sit at zero — the band killers and history will fill.
-/// These are ranks, not centipawns, and none of them may reach a score the
-/// search returns.
+/// These are ranks and not centipawns: they are only ever compared with each
+/// other, never mixed with or returned as a search score.
 const first_score: Score = 1 << 20;
 const noisy_score: Score = 1 << 16;
 
@@ -741,7 +747,9 @@ fn scoreMove(b: *const Board, m: Move) Score {
 
     // A promotion ranks by what it makes on the same scale a capture ranks by
     // what it takes, so a queen promotion sits with the queen captures. A
-    // capturing promotion is worth both and is meant to outrank both.
+    // capturing promotion collects both terms, which lands it *alongside* a
+    // capture of what it makes rather than above it — promoting to a queen
+    // while taking a pawn ties with taking a queen, and the tie stands.
     const gained: Score = if (kind.isPromotion()) @intFromEnum(kind.promoted()) * tier else 0;
     if (!kind.isCapture()) return noisy_score + gained;
 
@@ -787,8 +795,12 @@ const Ordered = struct {
         var best = i;
         var best_score = o.scores[i];
         for (o.scores[i + 1 .. o.list.len], i + 1..) |s, j| {
-            // `>`, never `>=`: a tie has to resolve to the earlier move or the
-            // node count stops being reproducible, and `bench` is read off it.
+            // `>`, never `>=`, so a scan keeps the earliest of equal scores.
+            // **That is not stability, and nothing may assume it is**: the swap
+            // below moves the displaced move to the back of the remaining list,
+            // so equal-scored moves do not come back in generation order. The
+            // quiet band is entirely equal-scored until killers and history
+            // land, which is exactly where the assumption would be made.
             if (s > best_score) {
                 best_score = s;
                 best = j;
@@ -1504,6 +1516,61 @@ test "MVV-LVA takes the biggest victim, and then the cheapest attacker" {
         const want = move.Move.fromUci(&s.b, case.want).?;
         try testing.expectEqual(@as(u16, @bitCast(want)), @as(u16, @bitCast(o.next(0))));
     }
+}
+
+/// The score `o` gave the move `uci` names, or null if it was never generated.
+fn scoreOfUci(o: *const Ordered, b: *const Board, uci: []const u8) ?Score {
+    const want: u16 = @bitCast(move.Move.fromUci(b, uci).?);
+    for (o.list.slice(), 0..) |m, i| {
+        if (@as(u16, @bitCast(m)) == want) return o.scores[i];
+    }
+    return null;
+}
+
+test "en passant is scored as the pawn it takes, not as the empty square it lands on" {
+    // The one capture whose victim is not standing on `m.to`. Reading the victim
+    // off the destination would score this against an empty square instead —
+    // and `pieceType()` on `.none` is an assert that is compiled out of the
+    // build every measurement is taken on.
+    const ep = try searcher("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    defer testing.allocator.destroy(ep);
+    var eo: Ordered = undefined;
+    movegen.generate(&ep.b, &eo.list);
+    eo.score(&ep.b, null);
+
+    // The same pawn taking the same pawn on the same square, arrived at
+    // normally: en passant has to score identically to it.
+    const plain = try searcher("4k3/8/3p4/4P3/8/8/8/4K3 w - - 0 1");
+    defer testing.allocator.destroy(plain);
+    var po: Ordered = undefined;
+    movegen.generate(&plain.b, &po.list);
+    po.score(&plain.b, null);
+
+    const by_rule = scoreOfUci(&eo, &ep.b, "e5d6").?;
+    try testing.expectEqual(scoreOfUci(&po, &plain.b, "e5d6").?, by_rule);
+    // ...and it is still a capture, not a quiet.
+    try testing.expect(by_rule >= noisy_score);
+}
+
+test "a capturing promotion collects both terms" {
+    // The only move that adds `gained` to a victim, and the only place the two
+    // could be transposed or one of them dropped without another test firing.
+    const s = try searcher("3r2k1/4P3/8/8/8/8/8/4K3 w - - 0 1");
+    defer testing.allocator.destroy(s);
+
+    var o: Ordered = undefined;
+    movegen.generate(&s.b, &o.list);
+    o.score(&s.b, null);
+
+    const taking = scoreOfUci(&o, &s.b, "e7d8q").?;
+    const quiet_promo = scoreOfUci(&o, &s.b, "e7e8q").?;
+    const under = scoreOfUci(&o, &s.b, "e7d8n").?;
+
+    // Taking the rook on the way in beats promoting to the same piece quietly,
+    // and promoting to a queen beats promoting to a knight on the same square.
+    try testing.expect(taking > quiet_promo);
+    try testing.expect(taking > under);
+    try testing.expectEqual(@as(u16, @bitCast(move.Move.fromUci(&s.b, "e7d8q").?)), @as(u16, @bitCast(o.next(0))));
 }
 
 test "the ordering move goes first, and one that is not in the list changes nothing" {
