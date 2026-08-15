@@ -337,12 +337,13 @@ implementation site — restating them here is how this file stops being worth r
             branch that does not take it** — it is free in the code it generates and not in
             the inlining budget it consumes, and only a profile distinguishes the two.
 
-            No SPRT yet. The published expectation for an engine at koji's exact maturity —
-            quiescence on top of a *material-only* evaluation — is that it measures little or
-            nothing, because most of what quiescence protects is invisible to a piece count;
-            one author reported exactly no improvement in that state. So the fixed-depth
-            horizon check is the correctness signal and the SPRT is a separate question. The
-            engine no longer plays Qxd5 into exd5 at depth 1, which it did before this branch.
+            The SPRT is the entry below. It was expected to measure little or nothing: the
+            published expectation for an engine at koji's exact maturity — quiescence on top
+            of a *material-only* evaluation — is that most of what quiescence protects is
+            invisible to a piece count, and one author reported exactly no improvement in
+            that state. The fixed-depth horizon check is therefore the correctness signal
+            independent of it: the engine no longer plays Qxd5 into exd5 at depth 1, which it
+            did before this branch.
 
             **Every number above is post-review, and the first draft of them was wrong.**
             `/code-review` found that horizon nodes were counted twice — `negamax` counted
@@ -359,3 +360,45 @@ implementation site — restating them here is how this file stops being worth r
             Turn gate: `zig build test` warm went **0.84s -> 4.33s**. A ply of any fixed-depth
             search test now costs ~10x, which is permanent; two plies of the deep coverage
             moved behind `build_options.slow`, the idiom `perft.zig` already used.
+
+### 2026-08-15 — Quiescence search: the strength number
+- branch:   feat/qsearch
+- type:     SPRT
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS** — H1 accepted
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +21.27 +/- 9.83 (nElo +27.63 +/- 12.73, LOS 100.00%)
+- games:    2862 (971-796-1095), 53.06%, draw ratio 34.17%
+- bench:    24356801
+- machine:  Zen 3, WSL2, 16 threads, concurrency 14, 1t/16MB per engine
+- notes:    **The first SPRT this project has been able to run.** The two entries before it
+            declined one for reasons that no longer apply — the table branch because both
+            binaries played identically at fixed depth, the clock branch because a
+            clock-aware binary against a fixed-depth one measures which side flags. Both
+            sides here spend the clock and play differently, so this is the first number
+            that means anything. 1h32m wall clock, 31 games/min.
+
+            Ptnml(0-2): [107, 298, 489, 387, 150] over 1431 pairs, WL/DD 1.39, pairs ratio
+            1.33 — the distribution is skewed the right way rather than resting on a handful
+            of decisive games.
+
+            **Read the size, not just the sign.** +21 Elo is a fraction of what quiescence
+            is worth in a mature engine, and that is the expected result rather than a
+            disappointment: it removes one error class while the dominant one — a material
+            count that cannot see king safety, structure or activity — is untouched, and it
+            spends real depth to do it (bench nps 21.7 -> 12.9M, so at a fixed clock this
+            build searches shallower than the one it beat). The gain is what survives that
+            trade. Both halves of it reverse as the engine grows: ordering gives the nps
+            back, and PSQT makes the leaf score worth protecting in the first place.
+
+            So treat this as the *floor* on quiescence's value, measured under the least
+            favourable conditions the engine will ever present. Worth re-running as an
+            ablation once PSQT and ordering land — the roadmap asks for exactly that, and
+            this is the first entry that gives it a baseline to compare against.
+
+            One caution for whoever reads this next: the run was flat for its first ~500
+            games (LLR wandering between -0.19 and +0.09, score 49.5%) and was called a dead
+            heat here before the sample justified it. At elo0=0/elo1=5 a few hundred games
+            cannot separate +20 from 0. Do not read an early SPRT.
