@@ -58,7 +58,10 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
 - [x] Quiescence search
 - [x] MVV-LVA move ordering, in the main search as well as in quiescence
-- [ ] SEE, splitting the captures into winning and losing
+- [x] SEE, splitting the captures into winning and losing — shipped together with not searching
+      the losing ones in quiescence, which is where the published evidence puts the effect and
+      where ordering alone can buy nothing, since quiescence has no depth limit to stop it
+      searching every capture anyway
 - [ ] Killer moves
 - [ ] History heuristic
 - [ ] PSQT + tapered evaluation
@@ -179,6 +182,15 @@ commitment to implement it.
   term at half an Elo. koji's own ablation disagrees in *nodes* — the term takes 12.8% off what
   victim-only ordering leaves (testlog, 2026-08-15) — and nodes are not Elo, so this is an SPRT
   at `elo0=-5 elo1=0`.
+- Losing captures ahead of the quiets rather than behind them. CPW records both placements as
+  common; koji shipped the mainstream one, and the case for the other is that a capture stays
+  tactically loaded even when SEE calls it losing — while koji's quiet band is unordered zeros
+  until killers and history land, so "behind the quiets" currently means behind thirty arbitrary
+  moves. Worth retesting *after* history lands, when the band it is being placed against actually
+  means something.
+- Ablate SEE's two halves against each other. They shipped together and the SPRT covers the pair;
+  the node split is recorded (testlog, 2026-08-15) but nodes are not Elo. Re-run once killers and
+  history have changed the ordering around them.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
