@@ -332,3 +332,51 @@ implementation site — restating them here is how this file stops being worth r
             material count blind to king safety and activity — is untouched, and depth paid
             for it (nps 21.7 -> 12.9M). Both reverse as the engine grows: re-run as an
             ablation once ordering and PSQT land.
+
+### 2026-08-15 — MVV-LVA move ordering
+- branch:   feat/mvv-lva
+- type:     SPRT + bench
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS** — H1 accepted
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +83.35 +/- 15.30 (nElo +155.34 +/- 27.44, LOS 100.00%)
+- games:    616 (166-21-429), 61.77%, draw ratio 61.36%, Ptnml [1,5,189,74,39]
+- bench:    4737990 (was 24356801)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path; SPRT at concurrency 14, 1t/16MB per engine
+- notes:    13 minutes and 616 games, against 1h32m and 2862 for quiescence. The bound is
+            hit this fast because the effect is large, not because anything was read
+            early — PairsRatio 18.83 on 616 games is a different regime from the +21 Elo
+            that needed 2862.
+
+            `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions:
+
+                                              nodes      change
+              main                       24,356,801
+              main-search ordering only   4,975,610      -79.6%
+              shipped, both nodes         4,737,990      -80.5%
+              rank MVV, no attacker term  5,431,917      -77.7%
+
+            Row 2 leaves quiescence on the victim-only sort it already had, so ordering
+            the main search accounts for 79.6 of the 80.5 points and quiescence moving
+            onto the shared scorer for the last 0.9. Stated against its own row instead,
+            quiescence takes 4.8% off what the main search alone had left.
+
+            `perf stat -r 5`: 1.8826s +/- 0.07% -> 0.4547s +/- 0.56%, a 4.14x speedup on
+            13.0M -> 10.6M nps. The nps is down because the scoring pass is paid at every
+            node; the node count is what carries the win.
+
+            **The attacker term takes 12.8% off victim-only ordering** (row 4 to row 3),
+            which is not what the published Elo evidence predicts: Stockfish removed LVA
+            in 2015 as a simplification that passed SPRT at both time controls, its author
+            estimating the whole term at half an Elo. Nodes are not Elo and this branch
+            does not separate them — dropping LVA is on the candidate list as its own
+            `elo0=-5 elo1=0` test, and that test is the only thing that settles it.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 4,737,990.
+
+            **The next ordering box is measured against this, not against `main`.** An
+            80% node cut is most of what ordering has to give at this eval; killers and
+            history land in the quiet band, which is untouched here and where a
+            material-only eval has least to say.

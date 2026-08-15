@@ -56,8 +56,11 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       `bench`
 - [x] Transposition table
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
-- [x] Quiescence search — carries a most-valuable-victim sort inside quiescence only
-- [ ] MVV-LVA + SEE move ordering, killers, history
+- [x] Quiescence search
+- [x] MVV-LVA move ordering, in the main search as well as in quiescence
+- [ ] SEE, splitting the captures into winning and losing
+- [ ] Killer moves
+- [ ] History heuristic
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
@@ -165,6 +168,17 @@ commitment to implement it.
   Zobrist keys and splits their transposition table entries. Now measurable — the table landed
   2026-08-14 — and it costs standards-conformant FEN output, which is what makes it a trade rather
   than a fix.
+- Score moves lazily instead of up front. `Ordered.score` walks the whole list, then `next` walks
+  the remainder again, so a node that cuts off after one move pays two passes where the victim-only
+  sort it replaced paid one — which is where `bench` lost nps (13.0M -> 10.6M, testlog 2026-08-15)
+  while winning on nodes. Two independent halves: fold the scoring into the first `next`, and give
+  `score` a comptime `first` so quiescence stops comparing every move against a key that is always
+  absent. Node counts cannot move, so this is `/bench`, not an SPRT.
+- Drop the LVA half of MVV-LVA and order captures by victim alone. Stockfish removed it in 2015 as
+  a simplification that passed SPRT at both time controls, its author putting the whole attacker
+  term at half an Elo. koji's own ablation disagrees in *nodes* — the term takes 12.8% off what
+  victim-only ordering leaves (testlog, 2026-08-15) — and nodes are not Elo, so this is an SPRT
+  at `elo0=-5 elo1=0`.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before

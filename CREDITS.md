@@ -215,14 +215,19 @@ Two rules:
 > **stand-pat, and the rule that it is forbidden in check** — origin: *unclear (folklore; CPW
 > states both and credits no one)* via https://www.chessprogramming.org/Quiescence_Search
 
-> **most-valuable-victim capture ordering** — origin: *unclear (folklore, common to N+ engines)*
-> via https://www.chessprogramming.org/MVV-LVA — koji sorts by victim value with **no attacker
-> term** and a promoted-piece term for promotions, inside quiescence only. CPW's MVV-LVA page
-> carries no history section and names no originator; "MVV without LVA" is not independently named
-> or attributed anywhere checked, and is treated as a degenerate MVV-LVA with the attacker term
-> dropped (https://talkchess.com/forum3/viewtopic.php?t=70918). Scoring promotions by the piece
-> promoted to is unattributed convention — the only trace found is a forum-post title with no
-> retrievable content
+> **MVV-LVA capture ordering** — origin: *Joe Condon and Ken Thompson, "Belle Chess Hardware",
+> Advances in Computer Chess 3 (1982), reprinted in the Computer Chess Compendium (1988): the "find
+> victim" and "find aggressor" op-codes wired into Belle's move generator are the earliest
+> documented statement of the rule* via https://www.chessprogramming.org/Belle — the **acronym** is
+> a separate matter and is uncredited: CPW's MVV-LVA page carries no history section and names no
+> originator, so only the mechanism is attributed here. Scoring promotions by the piece promoted to
+> is unattributed convention. Trail: *Belle in hardware (1982), universal in software engines by
+> the mid-1990s; Stockfish dropped the attacker half in 2015 as a passing simplification
+> (https://github.com/official-stockfish/Stockfish/pull/340)*
+
+> **selecting the best-scored move on each fetch instead of sorting the move list** — origin:
+> *unclear (folklore; CPW states it as what engines "usually" do and credits no one)* via
+> https://www.chessprogramming.org/Move_Ordering
 
 > **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
 > as an "enhancement" over a single deadline and names no originator)* via

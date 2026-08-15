@@ -53,11 +53,17 @@ if [[ -f docs/testlog.md ]]; then
   fi
 
   # Entries on main ran 7-53 lines; 60 leaves headroom over the largest.
+  #
+  # `blank` holds back the trailing separator, which belongs to the gap between
+  # entries and not to the entry above it. Without it the last entry in the file
+  # is measured a line short of every other, and then crosses the budget the
+  # moment anything is appended after it — which is how the quiescence entry
+  # went from 60 to 61 without a word being added to it.
   over="$(awk '
-    /^### /   { if (name != "" && n > 60) printf "  %s (%d lines)\n", name, n
-                name = substr($0, 5); n = 0 }
-    name != "" { n++ }
-    END       { if (name != "" && n > 60) printf "  %s (%d lines)\n", name, n }
+    /^### /   { if (name != "" && n - blank > 60) printf "  %s (%d lines)\n", name, n - blank
+                name = substr($0, 5); n = 0; blank = 0 }
+    name != "" { n++; if ($0 == "") blank++; else blank = 0 }
+    END       { if (name != "" && n - blank > 60) printf "  %s (%d lines)\n", name, n - blank }
   ' docs/testlog.md)"
   if [[ -n "$over" ]]; then
     say "testlog: entry over the 60-line budget (existing entries run 7-53):"
