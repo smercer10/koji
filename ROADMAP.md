@@ -57,7 +57,10 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] Transposition table
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
 - [x] Quiescence search — carries a most-valuable-victim sort inside quiescence only
-- [ ] MVV-LVA + SEE move ordering, killers, history
+- [x] MVV-LVA move ordering, in the main search as well as in quiescence
+- [ ] SEE, splitting the captures into winning and losing
+- [ ] Killer moves
+- [ ] History heuristic
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
@@ -165,6 +168,10 @@ commitment to implement it.
   Zobrist keys and splits their transposition table entries. Now measurable — the table landed
   2026-08-14 — and it costs standards-conformant FEN output, which is what makes it a trade rather
   than a fix.
+- Drop the LVA half of MVV-LVA and order captures by victim alone. Stockfish removed it in 2015 as
+  a simplification that passed SPRT at both time controls, its author putting the whole attacker
+  term at half an Elo. koji's own ablation disagrees in *nodes* — the term is worth 12.8% of
+  `bench` (testlog, 2026-08-15) — and nodes are not Elo, so this is an SPRT at `elo0=-5 elo1=0`.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before

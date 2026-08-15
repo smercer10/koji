@@ -523,29 +523,27 @@ pub const Searcher = struct {
             }
         }
 
-        var list: MoveList = undefined;
-        movegen.generate(&s.b, &list);
-        if (list.len == 0) {
+        var o: Ordered = undefined;
+        movegen.generate(&s.b, &o.list);
+        if (o.list.len == 0) {
             // Checkmate is scored from the mated side's view, which is the side
             // to move here; stalemate is simply a draw. Neither is stored: an
             // entry has to carry a move, and there is none.
             return if (movegen.inCheck(&s.b)) -(mate_score - @as(Score, @intCast(ply))) else 0;
         }
 
-        if (tt_move) |m| {
-            moveToFront(&list, m);
-        } else if (ply == 0) {
-            // Only reached when the root's own entry has been evicted, which a
-            // small table under a long game does do.
-            if (s.root_best) |best| moveToFront(&list, best);
-        }
+        // The root falls back to its own previous best only when its entry has
+        // been evicted, which a small table under a long game does do.
+        const first: ?Move = tt_move orelse if (ply == 0) s.root_best else null;
+        o.score(&s.b, first);
 
         var best = -infinity;
         // Every stored entry carries a move, including a fail-low node's: the
         // move that scored highest is still the one to try first next time.
-        var best_move = list.moves[0];
+        var best_move = o.list.moves[0];
 
-        for (list.slice()) |m| {
+        for (0..o.list.len) |i| {
+            const m = o.next(i);
             const undo = move.makeMove(&s.b, m);
             s.pushHistory();
 
@@ -609,10 +607,10 @@ pub const Searcher = struct {
 
         if (ply >= max_ply) return eval.evaluate(&s.b);
 
-        // Not `undefined` out of habit: `= .{}` here would `memset` 776 bytes at
+        // Not `undefined` out of habit: `= .{}` here would `memset` 2.3KB at
         // what is about to become the most-visited node type in the engine.
-        var list: MoveList = undefined;
-        const in_check = movegen.generateNoisy(&s.b, &list);
+        var o: Ordered = undefined;
+        const in_check = movegen.generateNoisy(&s.b, &o.list);
 
         var alpha = alpha_in;
         var best: Score = -infinity;
@@ -622,7 +620,7 @@ pub const Searcher = struct {
             // the static score is not a floor it can claim. An empty list is
             // therefore checkmate here and not a quiet position — the one place
             // quiescence can end a game.
-            if (list.len == 0) return -(mate_score - @as(Score, @intCast(ply)));
+            if (o.list.len == 0) return -(mate_score - @as(Score, @intCast(ply)));
         } else {
             // Stand pat. The floor under every line below: the side to move can
             // decline all of it and take the position as it stands, so no
@@ -636,9 +634,13 @@ pub const Searcher = struct {
             if (best > alpha) alpha = best;
         }
 
-        for (0..list.len) |i| {
-            selectMostValuableVictim(&s.b, &list, i);
-            const m = list.moves[i];
+        // Scored below the stand-pat cutoff, so a node that stands pat never
+        // pays for an ordering it does not use. Nothing outranks the captures
+        // here: quiescence does not probe the table, so there is no first move.
+        o.score(&s.b, null);
+
+        for (0..o.list.len) |i| {
+            const m = o.next(i);
             const undo = move.makeMove(&s.b, m);
             s.nodes += 1;
             const score = -s.quiesce(ply + 1, -beta, -alpha);
@@ -701,49 +703,102 @@ fn scoreFromTt(score: i16, ply: u32) Score {
     return value;
 }
 
-/// Swaps the highest-valued victim in `list[i..]` into `list[i]`.
-///
-/// **Not an optimisation — quiescence does not finish without it.** Removing it
-/// costs 296x the nodes (docs/testlog.md, 2026-08-15). Selection sort because
-/// the loop usually cuts off after a few moves.
+// --- move ordering ------------------------------------------------------------
 //
-// origin: unclear (folklore, common to N+ engines) — most-valuable-victim with
-//         no attacker term; CPW's page names no originator and "MVV without
-//         LVA" is not separately attributed anywhere found
-//         via https://www.chessprogramming.org/MVV-LVA
-fn selectMostValuableVictim(b: *const Board, list: *MoveList, i: usize) void {
-    var best = i;
-    var best_value: Score = -1;
-    for (list.moves[i..list.len], i..) |m, j| {
-        const victim: Score = if (m.kind == .ep_capture)
-            eval.piece_value[@intFromEnum(board.PieceType.pawn)]
-        else if (m.kind.isCapture())
-            eval.piece_value[@intFromEnum(b.pieceAt(m.to).pieceType())]
-        else
-            0;
-        const gained: Score = if (m.kind.isPromotion())
-            eval.piece_value[@intFromEnum(m.kind.promoted())]
-        else
-            0;
-        if (victim + gained > best_value) {
-            best_value = victim + gained;
-            best = j;
-        }
-    }
-    std.mem.swap(Move, &list.moves[i], &list.moves[best]);
+// origin: MVV-LVA — Joe Condon and Ken Thompson, "Belle Chess Hardware",
+//         Advances in Computer Chess 3, 1982: the "find victim" and "find
+//         aggressor" op-codes wired into Belle's move generator are the earliest
+//         documented statement of the rule. The *acronym* is uncredited — CPW
+//         names no one for it — so only the mechanism is attributed here.
+//         via https://www.chessprogramming.org/Belle
+// origin: selecting one move at a time instead of sorting the list — unclear
+//         (folklore; CPW states it as what engines "usually" do and names no one)
+//         via https://www.chessprogramming.org/Move_Ordering
+
+/// Number of piece types, and so the spacing between victim tiers below.
+const tier: Score = 6;
+
+/// The ordering move outranks everything, every capture and promotion outranks
+/// every quiet, and quiets sit at zero — the band killers and history will fill.
+/// These are ranks, not centipawns, and none of them may reach a score the
+/// search returns.
+const first_score: Score = 1 << 20;
+const noisy_score: Score = 1 << 16;
+
+/// What gets looked at first. Captures rank by victim, and within a victim by
+/// how cheap the attacker is.
+///
+/// **The attacker term is a tie-break and nothing more.** Stockfish removed it
+/// outright in 2015 as a simplification that passed SPRT at both time controls,
+/// its author estimating the whole of LVA at half an Elo, on the reasoning that
+/// most captures which cause a cutoff are captures of a hanging piece — where
+/// there is only one attacker to choose between. Kept because this box is named
+/// for it and it costs one mailbox read; do not defend it as load-bearing.
+/// via https://github.com/official-stockfish/Stockfish/pull/340
+fn scoreMove(b: *const Board, m: Move) Score {
+    const kind = m.kind;
+    if (!kind.isCapture() and !kind.isPromotion()) return 0;
+
+    // A promotion ranks by what it makes on the same scale a capture ranks by
+    // what it takes, so a queen promotion sits with the queen captures. A
+    // capturing promotion is worth both and is meant to outrank both.
+    const gained: Score = if (kind.isPromotion()) @intFromEnum(kind.promoted()) * tier else 0;
+    if (!kind.isCapture()) return noisy_score + gained;
+
+    // En passant is the one capture whose victim is not standing on `m.to`, and
+    // it is always a pawn taking a pawn — rank 0.
+    const victim: Score = if (kind == .ep_capture) 0 else @intFromEnum(b.pieceAt(m.to).pieceType());
+    const attacker: Score = @intFromEnum(b.pieceAt(m.from).pieceType());
+
+    // Victim tiers are `tier` apart and the attacker term spans `tier - 1`, so
+    // no attacker can push a capture down into a lower victim's tier. That is
+    // the only property this arithmetic has to have.
+    return noisy_score + gained + victim * tier + (tier - 1 - attacker);
 }
 
-/// Swaps `m` to the front of `list` if it is there at all. Preserves nothing
-/// else about the order — at the root, one move ahead of an otherwise unsorted
-/// list is exactly what iterative deepening has to offer.
-fn moveToFront(list: *MoveList, m: Move) void {
-    for (list.moves[0..list.len], 0..) |candidate, i| {
-        if (@as(u16, @bitCast(candidate)) == @as(u16, @bitCast(m))) {
-            std.mem.swap(Move, &list.moves[0], &list.moves[i]);
-            return;
+/// A move list with its ordering scores, handed back best-first.
+///
+/// **Declare one `undefined`**, the rule `MoveList` already carries and for the
+/// same reason: `scores` is 1.5KB that `score` fills before anything reads it.
+const Ordered = struct {
+    list: MoveList,
+    scores: [movegen.max_moves]Score,
+
+    /// Scores every generated move. `first` — the table's move, or the root's
+    /// previous best — outranks all of them. It is scored where it lies rather
+    /// than lifted out of the list, so it is still searched exactly once.
+    fn score(o: *Ordered, b: *const Board, first: ?Move) void {
+        // No generated move has `from == to`, so an all-zero key matches nothing
+        // and the absent case costs no branch of its own.
+        const key: u16 = if (first) |m| @bitCast(m) else 0;
+        for (o.list.slice(), 0..) |m, i| {
+            o.scores[i] = if (@as(u16, @bitCast(m)) == key) first_score else scoreMove(b, m);
         }
     }
-}
+
+    /// Swaps the best-scored move in `[i..]` into `i` and returns it.
+    ///
+    /// A selection sort rather than a sort of the list, because most nodes cut
+    /// off after a couple of moves: the tail is usually never fetched, and
+    /// sorting it is work thrown away. **Quiescence does not finish without
+    /// this at all** — removing the victim ordering it replaces cost 296x the
+    /// nodes (docs/testlog.md, 2026-08-15).
+    fn next(o: *Ordered, i: usize) Move {
+        var best = i;
+        var best_score = o.scores[i];
+        for (o.scores[i + 1 .. o.list.len], i + 1..) |s, j| {
+            // `>`, never `>=`: a tie has to resolve to the earlier move or the
+            // node count stops being reproducible, and `bench` is read off it.
+            if (s > best_score) {
+                best_score = s;
+                best = j;
+            }
+        }
+        std.mem.swap(Move, &o.list.moves[i], &o.list.moves[best]);
+        std.mem.swap(Score, &o.scores[i], &o.scores[best]);
+        return o.list.moves[i];
+    }
+};
 
 /// Distance to mate in *moves*, signed: positive if the side to move is
 /// mating, negative if it is being mated. Null if `score` is not a mate score.
@@ -1377,6 +1432,119 @@ test "searching the previous best move first does not change the score" {
     const without_ordering = cold.negamax(testDepth(2, 4), 0, -infinity, infinity);
 
     try testing.expectEqual(without_ordering, with_ordering);
+}
+
+test "ordering hands every move back exactly once, best first" {
+    // The selection-sort bug perft cannot see: perft never orders, so a swap
+    // that drops or duplicates a move surfaces only as a wrong search.
+    const fens = [_][]const u8{
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    };
+
+    for (fens) |fen| {
+        const s = try searcher(fen);
+        defer testing.allocator.destroy(s);
+
+        var o: Ordered = undefined;
+        movegen.generate(&s.b, &o.list);
+        const len = o.list.len;
+
+        var original: [movegen.max_moves]u16 = undefined;
+        for (o.list.slice(), 0..) |m, i| original[i] = @bitCast(m);
+
+        // The *last* generated move as the ordering move, so the path that
+        // lifts one out of the far end of the list runs rather than a no-op.
+        o.score(&s.b, o.list.moves[len - 1]);
+
+        var previous: Score = first_score;
+        for (0..len) |i| {
+            const m = o.next(i);
+            if (i == 0) try testing.expectEqual(original[len - 1], @as(u16, @bitCast(m)));
+            try testing.expect(o.scores[i] <= previous);
+            previous = o.scores[i];
+
+            // Strike it off. No move bitcasts to zero — a generated move never
+            // has `from == to` — so zero is a safe "already seen" marker.
+            var found = false;
+            for (original[0..len]) |*seen| {
+                if (seen.* == @as(u16, @bitCast(m))) {
+                    seen.* = 0;
+                    found = true;
+                    break;
+                }
+            }
+            try testing.expect(found);
+        }
+    }
+}
+
+test "MVV-LVA takes the biggest victim, and then the cheapest attacker" {
+    const cases = [_]struct { fen: []const u8, want: []const u8 }{
+        // Pawn takes queen against queen takes pawn: the victim decides.
+        .{ .fen = "4k3/8/1p2q3/QP1P4/8/8/8/6K1 w - - 0 1", .want = "d5e6" },
+        // One victim, two attackers, so only the attacker term can choose —
+        // and it has to send the knight in ahead of the queen.
+        .{ .fen = "4k3/8/8/3r4/5N2/8/8/3QK3 w - - 0 1", .want = "f4d5" },
+        // A queen promotion ranks with the queen captures, so it goes before a
+        // rook taking a knight.
+        .{ .fen = "k7/3P4/8/8/8/8/8/4K1nR w - - 0 1", .want = "d7d8q" },
+    };
+
+    for (cases) |case| {
+        const s = try searcher(case.fen);
+        defer testing.allocator.destroy(s);
+
+        var o: Ordered = undefined;
+        movegen.generate(&s.b, &o.list);
+        o.score(&s.b, null);
+
+        const want = move.Move.fromUci(&s.b, case.want).?;
+        try testing.expectEqual(@as(u16, @bitCast(want)), @as(u16, @bitCast(o.next(0))));
+    }
+}
+
+test "the ordering move goes first, and one that is not in the list changes nothing" {
+    const fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+    const s = try searcher(fen);
+    defer testing.allocator.destroy(s);
+
+    // A quiet rook shuffle: it scores zero on its own and would otherwise sort
+    // behind every capture on the board.
+    var o: Ordered = undefined;
+    movegen.generate(&s.b, &o.list);
+    const quiet = move.Move.fromUci(&s.b, "a1b1").?;
+    o.score(&s.b, quiet);
+    try testing.expectEqual(@as(u16, @bitCast(quiet)), @as(u16, @bitCast(o.next(0))));
+
+    // A move from an unrelated position, which is what a table collision hands
+    // back: it must simply not be found, leaving the order it would have had.
+    var collided: Ordered = undefined;
+    movegen.generate(&s.b, &collided.list);
+    collided.score(&s.b, move.Move.init(.a4, .a5, .quiet));
+
+    var plain: Ordered = undefined;
+    movegen.generate(&s.b, &plain.list);
+    plain.score(&s.b, null);
+
+    for (0..plain.list.len) |i| {
+        try testing.expectEqual(
+            @as(u16, @bitCast(plain.next(i))),
+            @as(u16, @bitCast(collided.next(i))),
+        );
+    }
+}
+
+test "ordering is applied, and the search costs fewer nodes for it" {
+    // The test that fires if the scorer is wired up but never actually reached.
+    // The bound is what this position cost at this depth on `main` at the commit
+    // before ordering existed, which makes it one-sided: a search that gets
+    // better only ever moves further under it, so it never needs raising.
+    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    defer testing.allocator.destroy(s);
+    try testing.expect(s.search(.{ .depth = 3 }, null).nodes < 1_300_546);
 }
 
 // --- with the transposition table on ------------------------------------------
