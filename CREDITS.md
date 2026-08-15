@@ -225,6 +225,27 @@ Two rules:
 > the mid-1990s; Stockfish dropped the attacker half in 2015 as a passing simplification
 > (https://github.com/official-stockfish/Stockfish/pull/340)*
 
+> **static exchange evaluation (the swap-off value)** — origin: *Donald Michie and John Maynard
+> Smith, SOMA (Swapping Off Material Analyser), c. 1961, described in Maynard Smith & Michie,
+> "Machines that Play Games", New Scientist, 1961* via https://www.chessprogramming.org/SOMA —
+> resolving one square's capture sequence to decide whether a piece is en prise predates engines by
+> a decade. The **bitboard formulation** koji implements — the least-valuable-attacker loop,
+> re-adding x-rayed sliders against a shrinking occupancy, and the gain-array negamax backward pass
+> — is separately *unclear (folklore; CPW presents the algorithm and attributes it to no one beyond
+> a credited preliminary-pruning optimisation by Michael Hoffmann)* via
+> https://www.chessprogramming.org/SEE_-_The_Swap_Algorithm. Trail: *named as a routine inside
+> engines from the late 1970s on; the engines that carry the earliest documented implementations are
+> unlicensed and so are not cited here, per the licence rule below*
+
+> **splitting captures into winning and losing by SEE, and ordering the losers behind the quiets** —
+> origin: *unclear (folklore; CPW's Move Ordering page gives the band layout as what engines do and
+> credits no one — and records that many place losing captures ahead of the quiets instead, so the
+> placement is not settled either)* via https://www.chessprogramming.org/Move_Ordering
+
+> **not searching losing captures in quiescence** — origin: *unclear (folklore; CPW states it
+> alongside delta pruning as standard practice and names no originator)* via
+> https://www.chessprogramming.org/Quiescence_Search
+
 > **selecting the best-scored move on each fetch instead of sorting the move list** — origin:
 > *unclear (folklore; CPW states it as what engines "usually" do and credits no one)* via
 > https://www.chessprogramming.org/Move_Ordering

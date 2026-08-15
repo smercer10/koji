@@ -46,7 +46,7 @@ older AMD, so detect it and keep both PEXT and plain magics rather than compilin
 - `src/main.zig` — CLI dispatch and the UCI loop. Output *shapes* are contracts: OpenBench parses `<nodes> nodes <nps> nps`; GUIs parse the `uci` block.
 - `build.zig` pins Zig 0.16.0 at comptime and gives every module an explicit `optimize` — a null one silently inherits, which is how you get an unexplained 3x in a bench.
 - Phase 1 splits out `board.zig`, `attacks.zig`, `move.zig`, `movegen.zig`, `perft.zig`; then
-  `search.zig`, `eval.zig`, `tt.zig`, `nnue.zig`. Imports stay acyclic in that order — make/unmake
+  `eval.zig`, `tt.zig`, `see.zig`, `search.zig`, `nnue.zig`. Imports stay acyclic in that order — make/unmake
   lives in `move.zig` as a function over `*Board`, not as a `Board` method, for exactly that reason.
 - Tests sit beside the code they test and **only run if reachable from `main.zig`'s import graph** — a file nothing imports is silently untested.
 - Once those exist: the accumulator stack unwinds exactly with make/unmake; the TT never returns a move illegal in the current position.
@@ -69,7 +69,8 @@ titles share one style: `<type>: <what>`, lowercase type from `feat/fix/perf/doc
 `/code-review` on the branch before merging — only for changes to the TT, threading/atomics,
 make/unmake, or the NNUE accumulator. Everywhere else SPRT is the authority.
 `/code-review max <paths>` once per phase, over the merged and tagged subsystem, plus `/audit` for
-the docs and `.claude/` setup. Why a decision was made lives in a comment where it is enforced —
+the docs and `.claude/` setup — weight that review toward `.claude/`, where every real defect so
+far has been found. Why a decision was made lives in a comment where it is enforced —
 read it before removing a rule that looks like an obstacle.
 
 ## Delegation

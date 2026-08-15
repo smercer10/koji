@@ -75,6 +75,8 @@ const MoveList = movegen.MoveList;
 
 const eval = @import("eval.zig");
 
+const see = @import("see.zig");
+
 const tt = @import("tt.zig");
 
 pub const Score = eval.Score;
@@ -602,6 +604,10 @@ pub const Searcher = struct {
     //         earliest use it records is Larry Harris, IJCAI 1975)
     // origin: stand-pat and its prohibition in check — unclear (folklore)
     //         via https://www.chessprogramming.org/Quiescence_Search
+    // origin: not searching the losing captures here — unclear (folklore; CPW
+    //         states it alongside delta pruning as standard practice and names
+    //         no originator)
+    //         via https://www.chessprogramming.org/Quiescence_Search
     fn quiesce(s: *Searcher, ply: u32, alpha_in: Score, beta: Score) Score {
         // Counted by the caller — `negamax` before delegating, the loop below
         // before descending. Incrementing here counts every horizon node twice,
@@ -647,6 +653,24 @@ pub const Searcher = struct {
 
         for (0..o.list.len) |i| {
             const m = o.next(i);
+
+            // SEE pruning. A capture that loses material is not searched at all
+            // here: quiescence exists to find out what is hanging, and a
+            // sequence that starts by giving material away answers a question
+            // nobody asked. This is where the ordering split pays — in the main
+            // search a losing capture is merely late, but quiescence has no
+            // depth limit to stop it and would search every one of them.
+            //
+            // A `break` and not a `continue`: `next` hands moves back in
+            // descending order, so the first losing capture means the whole
+            // remainder is losing too.
+            //
+            // **Only when not in check.** `generateNoisy` falls back to every
+            // legal move under check, so the list is evasions rather than
+            // captures — pruning there would be discarding the replies that
+            // decide whether this is mate.
+            if (!in_check and o.scores[i] < 0) break;
+
             const undo = move.makeMove(&s.b, m);
             s.nodes += 1;
             const score = -s.quiesce(ply + 1, -beta, -alpha);
@@ -720,16 +744,33 @@ fn scoreFromTt(score: i16, ply: u32) Score {
 // origin: selecting one move at a time instead of sorting the list — unclear
 //         (folklore; CPW states it as what engines "usually" do and names no one)
 //         via https://www.chessprogramming.org/Move_Ordering
+// origin: splitting captures into winning and losing by SEE, and ranking the
+//         losers below the quiets — unclear (folklore; CPW gives the band layout
+//         as what engines do, credits no one, and records that many place the
+//         losing captures ahead of the quiets instead)
+//         via https://www.chessprogramming.org/Move_Ordering
 
 /// Number of piece types, and so the spacing between victim tiers below.
 const tier: Score = 6;
 
-/// The ordering move outranks everything, every capture and promotion outranks
-/// every quiet, and quiets sit at zero — the band killers and history will fill.
-/// These are ranks and not centipawns: they are only ever compared with each
+/// The ordering move outranks everything, a capture or promotion that does not
+/// lose material outranks every quiet, quiets sit at zero — the band killers and
+/// history will fill — and a capture SEE says loses material sits below all of
+/// it. These are ranks and not centipawns: they are only ever compared with each
 /// other, never mixed with or returned as a search score.
+///
+/// The MVV-LVA term added to a band spans 59, so no capture can be pushed out of
+/// the band it was put in. That is the only property this spacing has to have.
+///
+/// **A losing capture sitting last is the mainstream choice, not the only one.**
+/// CPW records that many engines place them ahead of the quiets instead, on the
+/// grounds that a capture is tactically loaded even when SEE calls it losing —
+/// and koji's quiet band is entirely unordered zeros until killers and history
+/// land, so "last" here means behind thirty arbitrary moves. It is on the
+/// candidate list as its own test.
 const first_score: Score = 1 << 20;
 const noisy_score: Score = 1 << 16;
+const losing_score: Score = -(1 << 16);
 
 /// What gets looked at first. Captures rank by victim, and within a victim by
 /// how cheap the attacker is.
@@ -759,9 +800,22 @@ fn scoreMove(b: *const Board, m: Move) Score {
     const attacker: Score = @intFromEnum(b.pieceAt(m.from).pieceType());
 
     // Victim tiers are `tier` apart and the attacker term spans `tier - 1`, so
-    // no attacker can push a capture down into a lower victim's tier. That is
-    // the only property this arithmetic has to have.
-    return noisy_score + gained + victim * tier + (tier - 1 - attacker);
+    // no attacker can push a capture down into a lower victim's tier.
+    const ranked = gained + victim * tier + (tier - 1 - attacker);
+
+    // MVV-LVA still ranks the captures against each other; SEE only decides
+    // which band they rank in. That split is the usual one, and it is why this
+    // stays a sign test rather than a re-sort by exchange value: only the top of
+    // the list decides a cutoff, and an exact ordering of the losers buys
+    // nothing that their being last does not already buy.
+    //
+    // Promotions never go to SEE — `see.winning` asserts against it. What a
+    // promotion is worth turns on the piece it makes rather than on the exchange
+    // on its square, and pricing that inside the swap-off is an open question
+    // among engine authors rather than a settled rule. They stay in the top
+    // band; the reasoning is at `see.winning`.
+    if (kind.isPromotion()) return noisy_score + ranked;
+    return (if (see.winning(b, m)) noisy_score else losing_score) + ranked;
 }
 
 /// A move list with its ordering scores, handed back best-first.
@@ -891,6 +945,14 @@ fn referenceQuiesce(s: *Searcher, ply: u32) Score {
 
     var best: Score = if (in_check) -infinity else eval.evaluate(&s.b);
     for (list.slice()) |m| {
+        // The same SEE filter `quiesce` applies, stated the same way it is
+        // stated there. This reference is a declaration of the rule quiescence
+        // implements, and that rule now excludes losing captures — leaving it
+        // out would make the test below assert the *previous* rule and fail on
+        // a correct search.
+        if (!in_check and m.kind.isCapture() and !m.kind.isPromotion() and
+            !see.winning(&s.b, m)) continue;
+
         const undo = move.makeMove(&s.b, m);
         const score = -referenceQuiesce(s, ply + 1);
         move.unmakeMove(&s.b, m, undo);
