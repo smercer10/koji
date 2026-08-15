@@ -380,3 +380,46 @@ implementation site — restating them here is how this file stops being worth r
             80% node cut is most of what ordering has to give at this eval; killers and
             history land in the quiet band, which is untouched here and where a
             material-only eval has least to say.
+
+### 2026-08-15 — SEE: winning/losing split, and quiescence pruning
+- branch:   feat/see
+- type:     SPRT + bench
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **inconclusive** — stopped by hand at 5372 games, neither bound reached
+- LLR:      0.27 (-2.94, 2.94), having peaked at 1.14 around 3700 games
+- Elo:      +1.94 +/- 4.88 (nElo +3.70 +/- 9.29, LOS 78.23%)
+- games:    5372 (849-819-3704), 50.28%, draw ratio 67.68%, Ptnml [98,325,1818,339,106]
+- bench:    2188249 (was 4737990)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path; SPRT at concurrency 14, 1t/16MB per engine
+- notes:    Stopped, not failed. The estimate settled near +2 Elo — inside the
+            indifference region, where this bound pair has least power. 5372 games
+            bought 0.27 of the 2.94 needed and the LLR had already been to 1.14 and
+            back, so the answer needs a different instrument, not more games.
+
+            `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions:
+
+                                          nodes      change
+              main                    4,737,990
+              ordering split only     3,517,934      -25.8%
+              split + qsearch prune   2,188,249      -53.8%
+
+            The split is worth more than the published accounts imply — they put most
+            of SEE's effect on the pruning — and pruning still takes 37.8% off what the
+            split leaves.
+
+            `perf stat -r 5`: 0.4525s +/- 0.38% -> 0.2897s +/- 0.51%, 1.56x to the same
+            depth, on 10.65M -> 7.98M nps and 5.16G -> 3.20G instructions. SEE is paid
+            per capture per node, which is where the nps goes.
+
+            **A 54% node cut returning ~2 Elo is the result worth recording.** The
+            exchange logic was checked rather than suspected: `/code-review high` ran
+            `see.value` against an independently written recursive formulation over
+            ~500,000 captures from random playouts, zero mismatches. The live suspect is
+            placement — losing captures rank *below* the quiet band, and that band is
+            unordered zeros until killers and history land, so a losing capture is
+            searched after ~30 arbitrary quiets. CPW records the other placement as
+            equally common, and it is the cheapest thing to vary next.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 2,188,249.

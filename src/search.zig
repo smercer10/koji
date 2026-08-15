@@ -604,6 +604,10 @@ pub const Searcher = struct {
     //         earliest use it records is Larry Harris, IJCAI 1975)
     // origin: stand-pat and its prohibition in check — unclear (folklore)
     //         via https://www.chessprogramming.org/Quiescence_Search
+    // origin: not searching the losing captures here — unclear (folklore; CPW
+    //         states it alongside delta pruning as standard practice and names
+    //         no originator)
+    //         via https://www.chessprogramming.org/Quiescence_Search
     fn quiesce(s: *Searcher, ply: u32, alpha_in: Score, beta: Score) Score {
         // Counted by the caller — `negamax` before delegating, the loop below
         // before descending. Incrementing here counts every horizon node twice,
@@ -739,6 +743,11 @@ fn scoreFromTt(score: i16, ply: u32) Score {
 //         via https://www.chessprogramming.org/Belle
 // origin: selecting one move at a time instead of sorting the list — unclear
 //         (folklore; CPW states it as what engines "usually" do and names no one)
+//         via https://www.chessprogramming.org/Move_Ordering
+// origin: splitting captures into winning and losing by SEE, and ranking the
+//         losers below the quiets — unclear (folklore; CPW gives the band layout
+//         as what engines do, credits no one, and records that many place the
+//         losing captures ahead of the quiets instead)
 //         via https://www.chessprogramming.org/Move_Ordering
 
 /// Number of piece types, and so the spacing between victim tiers below.
