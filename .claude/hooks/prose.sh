@@ -95,9 +95,10 @@ fi
 
 # --- comment density ----------------------------------------------------------
 #
-# Not a cap: koji is deliberately comment-heavy, and files on main sit between
-# 0.27 and 0.62. This catches *ratcheting* — a file may hold or lower its
-# density, and +0.05 is the tolerance for genuinely new surface.
+# Not a cap: koji is deliberately comment-heavy, and files on main run 0.27
+# (board.zig, move.zig) to 0.86 (eval.zig). This catches *ratcheting* — a file
+# may hold or lower its density, and +0.05 is the tolerance for genuinely new
+# surface.
 ratio() { # ratio <blob-or-path> ; prints hundredths, integer
   local c t
   c="$(grep -cE '^[[:space:]]*//' <<<"$1" || true)"
@@ -106,15 +107,24 @@ ratio() { # ratio <blob-or-path> ; prints hundredths, integer
   echo $(( c * 100 / t ))
 }
 
+# `ratio` counts in hundredths, so a file with more comments than code returns
+# 100 or more. Printing that as `0.$now` rendered 102 as "0.102" — an order of
+# magnitude *under* the truth, and only ever wrong for the files furthest over
+# budget, which is exactly when the message needs to be believed.
+dec() { printf '%d.%02d' $(( $1 / 100 )) $(( $1 % 100 )); }
+
 while IFS= read -r f; do
   [[ -f "$f" ]] || continue
   now="$(ratio "$(cat "$f")")"
   was="$(ratio "$(git show "$base:$f" 2>/dev/null || true)")"
-  # A file that did not exist on the base has no density to ratchet against;
-  # judge it against the densest file on main rather than exempting it.
+  # A file that did not exist on the base has no density to ratchet against, so
+  # it gets a fixed budget rather than an exemption. 62 is the densest of the
+  # *substantial* files, not the densest overall: eval.zig reaches 0.86 only
+  # because it is 112 lines and its module header dominates the count, which is
+  # not a standard a new file should be sized against.
   (( was == 0 )) && was=62
   if (( now > was + 5 )); then
-    say "comments: $f is at 0.$(printf '%02d' "$now") comments/code, was 0.$(printf '%02d' "$was")."
+    say "comments: $f is at $(dec "$now") comments/code, was $(dec "$was")."
     say "  A comment earns its place by stopping someone breaking the rule it"
     say "  guards, not by recording what happened. **If you have already cut to"
     say "  that and the density still says no, stop and put the case to the"
