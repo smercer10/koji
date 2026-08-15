@@ -423,3 +423,9 @@ implementation site — restating them here is how this file stops being worth r
             equally common, and it is the cheapest thing to vary next.
 
             Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 2,188,249.
+
+            **Merged on the efficiency evidence without a passing SPRT** — a deliberate
+            exception, recorded here because `git log` will not show one. The pieces
+            that would decide it are not in place yet: quiescence carries the tactics
+            in a material-only eval, and the quiet band it ranks against is unordered
+            until killers and history land. Re-run once those and PSQT exist.
