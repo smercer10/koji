@@ -205,6 +205,25 @@ Two rules:
 > independently proposed sets spanning 1940 to 2012; there is no single "standard" refinement, only
 > named ones*
 
+> **quiescence search** — origin: *unclear (folklore of the 1970s programs; CPW names no
+> originator). The earliest published use of "quiescence" in this sense CPW records is Larry
+> Harris, IJCAI 1975; the formal treatment is D. F. Beal, "A Generalised Quiescence Search
+> Algorithm", Artificial Intelligence 43 (1990), 85-98* via
+> https://www.chessprogramming.org/Quiescence_Search — trail: *near-universal since the
+> 1970s-80s; no engine can be credited as first from available descriptions*
+
+> **stand-pat, and the rule that it is forbidden in check** — origin: *unclear (folklore; CPW
+> states both and credits no one)* via https://www.chessprogramming.org/Quiescence_Search
+
+> **most-valuable-victim capture ordering** — origin: *unclear (folklore, common to N+ engines)*
+> via https://www.chessprogramming.org/MVV-LVA — koji sorts by victim value with **no attacker
+> term** and a promoted-piece term for promotions, inside quiescence only. CPW's MVV-LVA page
+> carries no history section and names no originator; "MVV without LVA" is not independently named
+> or attributed anywhere checked, and is treated as a degenerate MVV-LVA with the attacker term
+> dropped (https://talkchess.com/forum3/viewtopic.php?t=70918). Scoring promotions by the piece
+> promoted to is unattributed convention — the only trace found is a forum-post title with no
+> retrievable content
+
 > **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
 > as an "enhancement" over a single deadline and names no originator)* via
 > https://www.chessprogramming.org/Time_Management — the companion rule for spending the soft limit,

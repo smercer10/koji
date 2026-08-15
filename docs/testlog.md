@@ -271,3 +271,91 @@ implementation site — restating them here is how this file stops being worth r
             spent so far. At an effective branching factor of 5.7 (entry above) that assumption is
             conservative, and move ordering will change the branching factor it is guessing about.
             Re-measure then.
+
+### 2026-08-15 — Quiescence search: captures, promotions, and every evasion in check
+- branch:   feat/qsearch
+- type:     bench + perft + ablation
+- result:   bench-measurable; **quiescence is unshippable without victim ordering (296x)**
+- bench:    24356801 (was 22088265)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions.
+
+              nodes            22,088,265 -> 24,356,801     +10.3%
+              wall clock            1.02 s -> 1.90 s
+              Mnps                    21.7 -> 12.9
+
+            Nodes rising is the technique, not a regression: every leaf that was one
+            `evaluate` call is now a search. The nps figure is not comparable across this
+            commit for the same reason the table commit's was not.
+
+            Bench invariant checked, not assumed: `-Dcpu=x86_64` — no AVX2, magics instead
+            of PEXT — gives the same 24,356,801 nodes.
+
+            **The ablation is the entry.** Quiescence was written without any move ordering,
+            since ordering is the next roadmap box, and that version cannot be shipped:
+
+                                          no victim sort    with victim sort    ratio
+              bench                     7,221,690,584          24,356,801         296x
+              Kiwipete to depth 1          40,144,537              22,411       1,791x
+              queens-loose to depth 1      13,360,907                 944      14,153x
+
+            One selection sort by captured-piece value, inside quiescence only, no attacker
+            term. Ordering cannot change what alpha-beta returns — only how much it visits —
+            so the scores are identical either way and this is search shape, not a different
+            answer. That is also how the 40M figure was diagnosed as the documented
+            no-ordering pathology rather than a bug in the quiescence itself: a fix that only
+            permutes moves cannot repair a wrong algorithm. The published diagnostic agrees —
+            a healthy quiescence runs ~7:1 q-nodes to main-search nodes and a broken one
+            (missing stand-pat, or alpha never raised after it) 100:1+, and 40M at depth 1
+            was far outside both.
+
+            Not every position pays. Startpos to depth 6 went **213,714 -> 136,299 nodes**:
+            nothing to capture, so quiescence costs almost nothing there, and the leaf scores
+            being right tightens the tree instead. The cost is concentrated exactly where the
+            captures are.
+
+            **Perft non-regression, and a trap worth recording.** Adding a second generation
+            to `movegen.zig` cost **+7.7% instructions on the untouched full-generation path**
+            before anything was done about it. Only part of that was the new code: reaching
+            the destination mask through a comptime branch instead of a runtime `Ctx` field
+            returned 3.7 points (+7.7% -> +4.0%), and dropping the field itself returned
+            0.04% more, so both together left most of it unexplained. Building with the
+            second instantiation replaced by the first gave *exactly* main's figure, which
+            said the remaining code was innocent, and `perf record` said why — on main,
+            `generate` is one 76.5% blob with `addPawnMoves`,
+            `attackedBy` and `generateEnPassant` inlined into it; the second instantiation
+            blew LLVM's inlining budget and pushed all three out of line. Marking those three
+            `inline` restored it:
+
+                                    startpos D6      Kiwipete D5
+              main            5,767,740,503    6,363,345,710
+              branch          5,739,901,617    6,385,591,938
+              change                 -0.48%           +0.35%
+
+            Perft nps 284M -> 305M. Instructions repeat to +/-0.00% over 5 runs, so those
+            are exact. **The lesson is that a comptime parameter is not free even on the
+            branch that does not take it** — it is free in the code it generates and not in
+            the inlining budget it consumes, and only a profile distinguishes the two.
+
+            No SPRT yet. The published expectation for an engine at koji's exact maturity —
+            quiescence on top of a *material-only* evaluation — is that it measures little or
+            nothing, because most of what quiescence protects is invisible to a piece count;
+            one author reported exactly no improvement in that state. So the fixed-depth
+            horizon check is the correctness signal and the SPRT is a separate question. The
+            engine no longer plays Qxd5 into exd5 at depth 1, which it did before this branch.
+
+            **Every number above is post-review, and the first draft of them was wrong.**
+            `/code-review` found that horizon nodes were counted twice — `negamax` counted
+            the node, then handed the same position to `quiesce`, which counted it again —
+            so startpos at depth 1 reported 41 nodes for the 21 positions that exist. That
+            is not a cosmetic miscount: `bench` is the OpenBench contract number, `nps` is
+            parsed off it, and a `go nodes` budget is spent against it at twice the rate.
+            Corrected, bench falls 26,115,877 -> 24,356,801, i.e. 6.7% of the first figure
+            was double counting. The ablation's *unordered* column barely moves under the
+            same fix (7,223,450,187 -> 7,221,690,584), which is itself informative: with no
+            ordering nearly every node is an interior quiescence node, counted once either
+            way, and only the horizon entries were ever doubled.
+
+            Turn gate: `zig build test` warm went **0.84s -> 4.33s**. A ply of any fixed-depth
+            search test now costs ~10x, which is permanent; two plies of the deep coverage
+            moved behind `build_options.slow`, the idiom `perft.zig` already used.

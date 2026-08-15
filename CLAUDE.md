@@ -7,7 +7,8 @@
 - Original code only. Elo is the only opinion that counts.
 
 ## Commands
-`zig build` (ReleaseFast) · `zig build test` (unit + shallow perft, warm <1s — the turn gate) ·
+`zig build` (ReleaseFast) · `zig build test` (unit + shallow perft, warm ~5s — the turn gate; quiescence
+made a ply of search test cost ~10x, so the deep depths moved behind `build_options.slow`) ·
 `zig build test-slow` (deep perft) · `zig build bench` · `-Doptimize=Debug` · `-Dtunables` (SPSA knobs,
 never shipped) · `./zig-out/bin/koji uci|bench|perft <depth>|epd <file>` · `make EXE=Engine-X`.
 
