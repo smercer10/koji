@@ -207,22 +207,9 @@ const Ctx = struct {
     /// Our pieces that may not leave the line through our own king.
     pinned: Bitboard,
 
-    /// Which destinations this generation is interested in, beside `target`:
-    /// every square, or — for `.noisy` with the king safe — the enemy pieces, so
-    /// only captures survive. Kept separate from `target` because the two answer
-    /// different questions: `target` is what the rules allow, this is what was
-    /// asked for, and a quiet promotion is a move `.noisy` wants that lands on
-    /// an empty square.
-    ///
-    /// **Reached through a comptime branch on `gen`, never read as a plain
-    /// field, and that part is measured**: as a runtime `Ctx` field consulted
-    /// directly this was a load and an `and` per piece that `.all` has no use
-    /// for, and it cost **+7.7% instructions across a whole perft**, of which
-    /// making it comptime returned 3.7 points. Being a function rather than a
-    /// field is worth almost nothing on its own (0.04%) and is here only because
-    /// nothing else wanted the eight bytes. The rest of that 7.7% was not in
-    /// this code at all — see the `inline` markers on `attackedBy`,
-    /// `addPawnMoves` and `generateEnPassant`, and docs/testlog.md 2026-08-15.
+    /// `wantedMask` over this node's checkers. **Must stay a comptime branch on
+    /// `gen`, not a stored field** — as a plain `Ctx` field it cost 3.7% of a
+    /// whole perft in loads `.all` has no use for.
     fn wanted(c: Ctx, comptime gen: GenType) Bitboard {
         return wantedMask(gen, c.checkers, c.enemy);
     }
@@ -236,16 +223,10 @@ const Ctx = struct {
 
 /// Which moves a generation is asked for.
 ///
-/// **Adding this enum cost 7.7% of perft's instructions before a line of it ran**,
-/// and the reason is worth knowing before adding a third member. A second
-/// instantiation of `generateFor` doubles the code under it, and that pushed
-/// LLVM past its inlining budget: on `main`, `generate` profiles as a single
-/// 76.5% blob with `attackedBy`, `addPawnMoves` and `generateEnPassant` folded
-/// into it, and afterwards those three appeared as out-of-line calls taking
-/// ~30% between them. They carry explicit `inline` for that reason and it is
-/// load-bearing. A comptime parameter is free in the code it generates and not
-/// in the budget it consumes — a profile is the only thing that tells the two
-/// apart. docs/testlog.md, 2026-08-15.
+/// **A third member is not free.** The second one cost 7.7% of perft's
+/// instructions by pushing `attackedBy`, `addPawnMoves` and `generateEnPassant`
+/// out of LLVM's inlining budget — hence their `inline`. Profile before adding.
+/// docs/testlog.md, 2026-08-15.
 pub const GenType = enum {
     /// Every legal move.
     all,
@@ -265,11 +246,8 @@ pub const GenType = enum {
 /// the side to move has to answer, so the evasions are the moves that matter and
 /// the captures among them are not a set anyone can stand pat on.
 ///
-/// Deliberately not folded into `Ctx.target`, which answers a different
-/// question — `target` is what the rules permit, this is what the caller asked
-/// for, and a quiet promotion is a move `.noisy` wants that lands on an empty
-/// square. `gen` is comptime, so `.all` gets a constant and every mask built
-/// from it folds away; see `GenType` for what that costs when it does not.
+/// Separate from `Ctx.target` because a quiet promotion is a move `.noisy` wants
+/// that lands on an empty square, which a mask folded into `target` would drop.
 inline fn wantedMask(comptime gen: GenType, checkers: Bitboard, enemy: Bitboard) Bitboard {
     if (gen == .all) return ~@as(Bitboard, 0);
     return if (checkers != 0) ~@as(Bitboard, 0) else enemy;
@@ -822,14 +800,9 @@ fn expectSameMoves(oracle: *const MoveList, got: *const MoveList) !void {
     try expectEqualStrings(try listText(oracle, &a), try listText(got, &b));
 }
 
-/// `generateNoisy` against the answer derived from the oracle's own list: the
-/// captures and promotions, or every move when the side to move is in check.
-///
-/// Deriving the expectation by filtering rather than writing a second noisy
-/// generator is the point. There is nothing here for the two to disagree about
-/// independently — the noisy path inherits every guarantee `generateSlow`
-/// already gives `generate`, at every node these walks reach, and what is left
-/// to check is exactly the new masks and nothing else.
+/// `generateNoisy` against the oracle's own list, filtered. **Filter, never a
+/// second noisy generator** — this way the only thing left to disagree is the
+/// new masks.
 fn expectNoisyAgrees(b: *Board, oracle: *const MoveList) !void {
     const in_check = inCheck(b);
 
@@ -1161,10 +1134,7 @@ test "startpos generates the twenty opening moves" {
 
 // --- the noisy generation ------------------------------------------------------------
 //
-// The walks above already compare `generateNoisy` against the oracle at every
-// node they reach, which is where a mask that is subtly wrong actually gets
-// caught. These four say in full what the four rules *are*, so that a failure
-// names the rule instead of naming a position.
+// The walks above catch a wrong mask; these four name which rule broke.
 
 fn expectNoisyMoves(fen: []const u8, expected: []const []const u8) !void {
     attacks.init();
@@ -1180,18 +1150,13 @@ fn expectNoisyMoves(fen: []const u8, expected: []const []const u8) !void {
 }
 
 test "a quiet position generates nothing to search" {
-    // Six legal moves, not one of them a capture or a promotion. This is the
-    // base case quiescence rests on: nothing to search means stand pat is the
-    // answer, and a generator that leaked a single quiet move here would turn
-    // quiescence into an unbounded full-width search.
+    // One leaked quiet move here turns quiescence into a full-width search.
     try expectNoisyMoves("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", &.{});
 }
 
 test "a promotion is noisy whether or not it captures" {
-    // Both halves at once: a7a8 lands on an empty square and axb8 takes the
-    // knight. The quiet one is the case a captures-only mask deletes, and it is
-    // the larger swing of the two — which is why `to` is a mask beside `target`
-    // rather than folded into it.
+    // a7a8 lands on an empty square — the case a mask on `enemy` alone deletes,
+    // and the larger swing of the two.
     try expectNoisyMoves("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1", &.{
         "a7a8q", "a7a8r", "a7a8b", "a7a8n",
         "a7b8q", "a7b8r", "a7b8b", "a7b8n",
@@ -1199,19 +1164,14 @@ test "a promotion is noisy whether or not it captures" {
 }
 
 test "in check every evasion is noisy, not just the captures among them" {
-    // The rook checks and cannot be taken, so every legal reply is a quiet king
-    // step. A captures-only generation returns an empty list here, and an empty
-    // list in check reads as checkmate — quiescence would score a position that
-    // is merely awkward as a loss.
+    // Every legal reply is a quiet king step, so a captures-only generation
+    // returns nothing — and an empty list in check reads as checkmate.
     try expectNoisyMoves("4r2k/8/8/8/4K3/8/8/8 w - - 0 1", &.{
         "e4d3", "e4d4", "e4d5", "e4f3", "e4f4", "e4f5",
     });
 }
 
 test "en passant is noisy though it lands on an empty square" {
-    // The other move that escapes a mask on `enemy`: the captured pawn is on
-    // d5, not on the d6 the capturing pawn arrives at. `generateEnPassant`
-    // sidesteps both masks for reasons of its own, and this pins that it stays
-    // reachable from the noisy path.
+    // The captured pawn is on d5, not the d6 arrived at — so `enemy` misses it.
     try expectNoisyMoves("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", &.{"e5d6"});
 }

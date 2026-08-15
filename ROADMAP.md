@@ -56,9 +56,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       `bench`
 - [x] Transposition table
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
-- [x] Quiescence search — captures and promotions, stand-pat, every evasion when in check.
-      Carries a bare most-valuable-victim sort *inside quiescence only*, because without one
-      Kiwipete cost 40M nodes at depth 1 (`docs/testlog.md`); the main search is still unordered
+- [x] Quiescence search — carries a most-valuable-victim sort inside quiescence only
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert

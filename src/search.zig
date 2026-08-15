@@ -586,36 +586,22 @@ pub const Searcher = struct {
         return best;
     }
 
-    /// Searches on past the horizon until nothing is hanging, so that `evaluate`
-    /// is only ever asked about a position it can actually judge. A material
-    /// count applied in the middle of an exchange is not wrong by a little.
+    /// Searches on past the horizon until nothing is hanging, so `evaluate` is
+    /// only asked about positions it can judge.
     ///
-    /// **No depth counter, deliberately.** The recursion is bounded by the
-    /// position rather than by a limit: every capture removes a piece, and a
-    /// check can only be repeated here by a capture that gives one, so both
-    /// directions run out. Sources are unanimous that a ply cap on quiescence is
-    /// an anti-pattern — it is reached for when stand-pat is missing or alpha is
-    /// not raised after it, and it hides those bugs rather than fixing them.
-    /// `ply >= max_ply` below is the array bound, not a search limit.
+    /// **Do not add a ply cap.** Captures are finite and a check can only recur
+    /// here via a capture, so this terminates on its own; a cap is the classic
+    /// wrong fix for a missing stand-pat or an unraised alpha. `ply >= max_ply`
+    /// below is the array bound, not a search limit.
     //
-    // origin: quiescence search — unclear (folklore of the 1970s programs; CPW
-    //         names no originator). The earliest published use of "quiescence"
-    //         in this sense that CPW records is Larry Harris, IJCAI 1975; the
-    //         formal treatment is D. F. Beal, "A Generalised Quiescence Search
-    //         Algorithm", Artificial Intelligence 43 (1990)
-    //         via https://www.chessprogramming.org/Quiescence_Search
-    // origin: stand-pat, and the rule that it is forbidden in check — unclear
-    //         (folklore; CPW states both and credits no one)
+    // origin: quiescence search — unclear (folklore; CPW names no originator,
+    //         earliest use it records is Larry Harris, IJCAI 1975)
+    // origin: stand-pat and its prohibition in check — unclear (folklore)
     //         via https://www.chessprogramming.org/Quiescence_Search
     fn quiesce(s: *Searcher, ply: u32, alpha_in: Score, beta: Score) Score {
-        // **This position is already counted, so it is not counted here.**
-        // `negamax` counted it before delegating, and the loop below counts each
-        // child before descending into it — quiescence continues judging the
-        // node the caller was already on rather than visiting a new one. An
-        // increment here instead would count every horizon position twice:
-        // startpos at depth 1 reported 41 nodes for the 21 positions that exist.
-        // `bench` is a contract number, `nps` is what OpenBench parses off it,
-        // and `go nodes` is a budget spent against it, so all three read this.
+        // Counted by the caller — `negamax` before delegating, the loop below
+        // before descending. Incrementing here counts every horizon node twice,
+        // which `bench`, `nps` and `go nodes` are all read off.
         s.pv_len[ply] = 0;
 
         if (s.nodes & (check_interval - 1) == 0) s.pollLimits();
@@ -715,32 +701,16 @@ fn scoreFromTt(score: i16, ply: u32) Score {
     return value;
 }
 
-/// Swaps the highest-valued victim in `list[i..]` into `list[i]`, so quiescence
-/// tries to take the queen before it tries to take the pawn.
+/// Swaps the highest-valued victim in `list[i..]` into `list[i]`.
 ///
-/// **This is not an optimisation, it is what makes quiescence finishable**, and
-/// the margin is not close: with this line removed, `bench` costs 7,221,690,584
-/// nodes instead of 24,356,801, and Kiwipete needs 40,144,537 nodes to reach
-/// depth *one* rather than 22,411 (docs/testlog.md, 2026-08-15). Unordered, both
-/// sides' queens go on plunder raids that only refute twenty plies down; taking
-/// the most valuable piece first ends them immediately.
-///
-/// Ordering cannot change what alpha-beta returns, only how much it visits — so
-/// the scores are identical either way, and the 296x is search shape rather than
-/// a different answer. The main search is still unordered; that is its own box.
-///
-/// A selection sort rather than a full one because the loop usually cuts off
-/// after a few moves, and sorting a tail nobody looks at is work for nothing.
+/// **Not an optimisation — quiescence does not finish without it.** Removing it
+/// costs 296x the nodes (docs/testlog.md, 2026-08-15). Selection sort because
+/// the loop usually cuts off after a few moves.
 //
-// origin: unclear (folklore, common to N+ engines) — most-valuable-victim
-//         ordering with no attacker term, plus a promoted-piece term for
-//         promotions. CPW's MVV-LVA page carries no history section and names
-//         no originator; "MVV without LVA" is not independently named or
-//         attributed anywhere found, and is treated everywhere as a degenerate
-//         MVV-LVA with the attacker term dropped. Scoring promotions by the
-//         piece promoted to is likewise unattributed convention.
+// origin: unclear (folklore, common to N+ engines) — most-valuable-victim with
+//         no attacker term; CPW's page names no originator and "MVV without
+//         LVA" is not separately attributed anywhere found
 //         via https://www.chessprogramming.org/MVV-LVA
-//         and https://talkchess.com/forum3/viewtopic.php?t=70918
 fn selectMostValuableVictim(b: *const Board, list: *MoveList, i: usize) void {
     var best = i;
     var best_value: Score = -1;
@@ -798,19 +768,10 @@ const attacks = @import("attacks.zig");
 /// The depth a fixed-depth search test runs at: `gate` on `zig build test`,
 /// `deep` on `zig build test-slow`.
 ///
-/// Quiescence multiplied what a ply costs by roughly an order of magnitude — the
-/// same suite that ran in 0.84s before it took 9.7s after at unchanged depths —
-/// so the gate had to give plies back. They are not given up, they move, and
-/// `deep` is where they went. `perft.zig` gates its own depth ladder against the
-/// same flag.
-///
-/// **Both numbers are written out at every call site on purpose.** This started
-/// life as a single `+ extra_plies` offset, and a review found what that hides:
-/// four tests had dropped two plies against an offset that only restored one, so
-/// they were quietly shallower than before quiescence landed *even under*
-/// `test-slow`, which is exactly the failure this whole mechanism exists to
-/// prevent. A pair per site cannot drift that way — `deep` is the depth the test
-/// ran at on `main`, and it is checkable by reading one line.
+/// A ply of search test costs ~10x what it did before quiescence, so the gate
+/// gave plies back and `deep` is where they went. **`deep` is the depth the test
+/// ran at on `main`** — written out per site rather than as a shared offset,
+/// which cannot express tests that gave up different amounts.
 fn testDepth(comptime gate: u8, comptime deep: u8) u8 {
     comptime std.debug.assert(deep >= gate);
     return if (@import("build_options").slow) deep else gate;
@@ -852,13 +813,8 @@ fn searcherWith(fen: ?[]const u8, table: *tt.Table) !*Searcher {
 /// to compute, written the way the rule reads rather than the way it is
 /// searched, so the two can be checked against each other.
 ///
-/// **Only the test directly below uses this, and deliberately.** Hanging it off
-/// `referenceMinimax`'s leaves instead — reference search over reference
-/// quiescence — multiplies two exponentials that have nothing to do with each
-/// other, and turns a sub-second gate into one that does not finish. The two
-/// claims are separable and are separated: this one checks quiescence against
-/// its own rule, and `referenceMinimax` checks alpha-beta against plain minimax
-/// over a shared leaf.
+/// **Only the test below may use this.** Hanging it off `referenceMinimax`'s
+/// leaves multiplies two unpruned searches and the gate stops finishing.
 fn referenceQuiesce(s: *Searcher, ply: u32) Score {
     if (ply >= max_ply) return eval.evaluate(&s.b);
 
@@ -919,14 +875,6 @@ test "alpha-beta returns exactly the score minimax does" {
     // fixed-depth search with a table can return a score fixed-depth minimax
     // does not — better information, not a bug. This test is about alpha-beta;
     // asserting it with a table would be asserting something false.
-    //
-    // **The depths came down a ply when quiescence landed**, and the reason is
-    // worth keeping: a leaf used to be one `evaluate` call and is now a search,
-    // so the reference side — which prunes nothing — pays that at every one of
-    // its leaves. Kiwipete at depth 3 alone took the gate from under a second to
-    // minutes. What this test is *for* is the window arithmetic, and that is
-    // exercised by the shape of the tree rather than by its depth; the plies
-    // given up here are bought back by `test-slow` and by the SPRT.
     const cases = .{
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", testDepth(3, 4) },
         // Kiwipete: castling, pins and a dense capture set.
@@ -955,14 +903,9 @@ test "alpha-beta returns exactly the score minimax does" {
     }
 }
 
-/// Positions the *unpruned* reference can afford, one per rule it has to get
-/// right. Every one is deliberately small.
-///
-/// `referenceQuiesce` does no alpha-beta at all, so its cost is the whole
-/// capture permutation tree — on a position like Kiwipete that is not a slow
-/// test, it is a test that does not finish. The dense positions are still
-/// covered, by `quiescent_dense` below, against the properties that can be
-/// checked without a reference.
+/// Positions the unpruned reference can afford, one per rule it must get right.
+/// **Keep them small** — `referenceQuiesce` has no alpha-beta, so a dense
+/// position is not a slow test but one that never finishes.
 const quiescent_sparse = [_][]const u8{
     // A queen that can take a defended pawn: the smallest losing capture there
     // is, and the one the horizon test below is built on.
@@ -977,9 +920,8 @@ const quiescent_sparse = [_][]const u8{
     "8/8/8/3k4/8/8/3KP3/8 w - - 0 1",
 };
 
-/// The positions quiescence is actually hard in: many captures, deep exchanges,
-/// loose queens. No reference can be run against these, but the stand-pat floor
-/// and termination can, and those are what break here.
+/// Where quiescence is actually hard. No reference can run against these; the
+/// stand-pat floor and termination can, and those are what break here.
 const quiescent_dense = [_][]const u8{
     // Kiwipete: eight captures at the root and exchanges several plies deep.
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -988,12 +930,9 @@ const quiescent_dense = [_][]const u8{
 };
 
 test "quiescence returns exactly what the rule it implements returns" {
-    // The counterpart of the minimax test above, for the other half of the
-    // search. `quiesce` prunes with a window and cuts off; `referenceQuiesce`
-    // states the rule — best of standing pat and every capture — and does
-    // neither. Under a full window they have to agree exactly, and a stand-pat
-    // that cuts on the wrong side of beta, an alpha never raised after standing
-    // pat, or a mate score that forgot its ply all show up here as a number.
+    // The minimax test above, for the other half of the search. Catches a
+    // stand-pat cutting on the wrong side of beta, an alpha never raised after
+    // it, and a mate score that forgot its ply.
     for (quiescent_sparse) |fen| {
         const s = try searcher(fen);
         defer testing.allocator.destroy(s);
@@ -1008,16 +947,9 @@ test "quiescence returns exactly what the rule it implements returns" {
 }
 
 test "quiescence never scores below standing pat" {
-    // The floor the whole thing rests on: out of check, the side to move can
-    // decline every capture and keep the position as it stands, so no line
-    // below can drag the score under the static one. A quiescence that returned
-    // the best *capture* rather than the best of {stand pat, captures} would
-    // fail here on any position where every capture loses material — and would
-    // be a search that walks into losing exchanges on purpose.
-    //
-    // Runs over the dense positions too: this is the strongest claim that can be
-    // made about them, since it needs no reference to compare against, and it
-    // doubles as the assertion that quiescence *terminates* there at all.
+    // Returning the best *capture* instead of the best of {stand pat, captures}
+    // fails here wherever every capture loses material. Includes the dense
+    // positions: needs no reference, and doubles as a termination check.
     for (quiescent_sparse ++ quiescent_dense) |fen| {
         const s = try searcher(fen);
         defer testing.allocator.destroy(s);
@@ -1028,11 +960,8 @@ test "quiescence never scores below standing pat" {
 }
 
 test "quiescence scores a mate rather than standing pat in check" {
-    // The one place quiescence can end a game. Black is mated where it stands,
-    // so the in-check branch has to produce a ply-adjusted mate score — not the
-    // static evaluation, which here says Black is merely a rook down. This is
-    // the failure that reads from outside exactly like a transposition table
-    // collision, which is why it gets a test of its own.
+    // The one place quiescence ends a game. Getting this wrong reads from
+    // outside exactly like a TT collision, hence its own test.
     const s = try searcher("R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1");
     defer testing.allocator.destroy(s);
 
@@ -1043,10 +972,8 @@ test "quiescence scores a mate rather than standing pat in check" {
 }
 
 test "a queen taken at the horizon is no longer counted as won material" {
-    // The horizon effect itself, on the smallest position that shows it. Black's
-    // d5 pawn is defended by the pawn on e6, so Qxd5 wins a pawn on Monday and
-    // loses a queen on Tuesday. A depth-1 search scoring its leaves statically
-    // sees only Monday: +800, the best move on the board.
+    // d5 is defended by e6, so Qxd5 wins a pawn and loses a queen one ply later.
+    // Scoring leaves statically, depth 1 sees only the pawn: +800, best move.
     const s = try searcher("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1");
     defer testing.allocator.destroy(s);
 

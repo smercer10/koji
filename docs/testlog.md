@@ -272,133 +272,63 @@ implementation site — restating them here is how this file stops being worth r
             conservative, and move ordering will change the branching factor it is guessing about.
             Re-measure then.
 
-### 2026-08-15 — Quiescence search: captures, promotions, and every evasion in check
+### 2026-08-15 — Quiescence search
 - branch:   feat/qsearch
-- type:     bench + perft + ablation
-- result:   bench-measurable; **quiescence is unshippable without victim ordering (296x)**
-- bench:    24356801 (was 22088265)
-- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
-- notes:    `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions.
-
-              nodes            22,088,265 -> 24,356,801     +10.3%
-              wall clock            1.02 s -> 1.90 s
-              Mnps                    21.7 -> 12.9
-
-            Nodes rising is the technique, not a regression: every leaf that was one
-            `evaluate` call is now a search. The nps figure is not comparable across this
-            commit for the same reason the table commit's was not.
-
-            Bench invariant checked, not assumed: `-Dcpu=x86_64` — no AVX2, magics instead
-            of PEXT — gives the same 24,356,801 nodes.
-
-            **The ablation is the entry.** Quiescence was written without any move ordering,
-            since ordering is the next roadmap box, and that version cannot be shipped:
-
-                                          no victim sort    with victim sort    ratio
-              bench                     7,221,690,584          24,356,801         296x
-              Kiwipete to depth 1          40,144,537              22,411       1,791x
-              queens-loose to depth 1      13,360,907                 944      14,153x
-
-            One selection sort by captured-piece value, inside quiescence only, no attacker
-            term. Ordering cannot change what alpha-beta returns — only how much it visits —
-            so the scores are identical either way and this is search shape, not a different
-            answer. That is also how the 40M figure was diagnosed as the documented
-            no-ordering pathology rather than a bug in the quiescence itself: a fix that only
-            permutes moves cannot repair a wrong algorithm. The published diagnostic agrees —
-            a healthy quiescence runs ~7:1 q-nodes to main-search nodes and a broken one
-            (missing stand-pat, or alpha never raised after it) 100:1+, and 40M at depth 1
-            was far outside both.
-
-            Not every position pays. Startpos to depth 6 went **213,714 -> 136,299 nodes**:
-            nothing to capture, so quiescence costs almost nothing there, and the leaf scores
-            being right tightens the tree instead. The cost is concentrated exactly where the
-            captures are.
-
-            **Perft non-regression, and a trap worth recording.** Adding a second generation
-            to `movegen.zig` cost **+7.7% instructions on the untouched full-generation path**
-            before anything was done about it. Only part of that was the new code: reaching
-            the destination mask through a comptime branch instead of a runtime `Ctx` field
-            returned 3.7 points (+7.7% -> +4.0%), and dropping the field itself returned
-            0.04% more, so both together left most of it unexplained. Building with the
-            second instantiation replaced by the first gave *exactly* main's figure, which
-            said the remaining code was innocent, and `perf record` said why — on main,
-            `generate` is one 76.5% blob with `addPawnMoves`,
-            `attackedBy` and `generateEnPassant` inlined into it; the second instantiation
-            blew LLVM's inlining budget and pushed all three out of line. Marking those three
-            `inline` restored it:
-
-                                    startpos D6      Kiwipete D5
-              main            5,767,740,503    6,363,345,710
-              branch          5,739,901,617    6,385,591,938
-              change                 -0.48%           +0.35%
-
-            Perft nps 284M -> 305M. Instructions repeat to +/-0.00% over 5 runs, so those
-            are exact. **The lesson is that a comptime parameter is not free even on the
-            branch that does not take it** — it is free in the code it generates and not in
-            the inlining budget it consumes, and only a profile distinguishes the two.
-
-            The SPRT is the entry below. It was expected to measure little or nothing: the
-            published expectation for an engine at koji's exact maturity — quiescence on top
-            of a *material-only* evaluation — is that most of what quiescence protects is
-            invisible to a piece count, and one author reported exactly no improvement in
-            that state. The fixed-depth horizon check is therefore the correctness signal
-            independent of it: the engine no longer plays Qxd5 into exd5 at depth 1, which it
-            did before this branch.
-
-            **Every number above is post-review, and the first draft of them was wrong.**
-            `/code-review` found that horizon nodes were counted twice — `negamax` counted
-            the node, then handed the same position to `quiesce`, which counted it again —
-            so startpos at depth 1 reported 41 nodes for the 21 positions that exist. That
-            is not a cosmetic miscount: `bench` is the OpenBench contract number, `nps` is
-            parsed off it, and a `go nodes` budget is spent against it at twice the rate.
-            Corrected, bench falls 26,115,877 -> 24,356,801, i.e. 6.7% of the first figure
-            was double counting. The ablation's *unordered* column barely moves under the
-            same fix (7,223,450,187 -> 7,221,690,584), which is itself informative: with no
-            ordering nearly every node is an interior quiescence node, counted once either
-            way, and only the horizon entries were ever doubled.
-
-            Turn gate: `zig build test` warm went **0.84s -> 4.33s**. A ply of any fixed-depth
-            search test now costs ~10x, which is permanent; two plies of the deep coverage
-            moved behind `build_options.slow`, the idiom `perft.zig` already used.
-
-### 2026-08-15 — Quiescence search: the strength number
-- branch:   feat/qsearch
-- type:     SPRT
+- type:     SPRT + bench + perft
 - bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
 - TC:       8+0.08
 - book:     UHO_Lichess_4852_v1.epd
 - result:   **PASS** — H1 accepted
 - LLR:      2.95 (-2.94, 2.94)
 - Elo:      +21.27 +/- 9.83 (nElo +27.63 +/- 12.73, LOS 100.00%)
-- games:    2862 (971-796-1095), 53.06%, draw ratio 34.17%
-- bench:    24356801
-- machine:  Zen 3, WSL2, 16 threads, concurrency 14, 1t/16MB per engine
-- notes:    **The first SPRT this project has been able to run.** The two entries before it
-            declined one for reasons that no longer apply — the table branch because both
-            binaries played identically at fixed depth, the clock branch because a
-            clock-aware binary against a fixed-depth one measures which side flags. Both
-            sides here spend the clock and play differently, so this is the first number
-            that means anything. 1h32m wall clock, 31 games/min.
+- games:    2862 (971-796-1095), 53.06%, draw ratio 34.17%, Ptnml [107,298,489,387,150]
+- bench:    24356801 (was 22088265)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path; SPRT at concurrency 14, 1t/16MB per engine
+- notes:    The first SPRT this project could run: the two entries above declined one because
+            the binaries were the same player at fixed depth, then because a clock-aware
+            build against a fixed-depth one measures which side flags. 1h32m, 31 games/min.
 
-            Ptnml(0-2): [107, 298, 489, 387, 150] over 1431 pairs, WL/DD 1.39, pairs ratio
-            1.33 — the distribution is skewed the right way rather than resting on a handful
-            of decisive games.
+            **Do not read an early SPRT.** This sat at 49.5% for ~500 games, LLR in
+            (-0.19, +0.09), and was called a dead heat before the sample justified it. At
+            elo0=0/elo1=5 a few hundred games cannot separate +20 from 0.
 
-            **Read the size, not just the sign.** +21 Elo is a fraction of what quiescence
-            is worth in a mature engine, and that is the expected result rather than a
-            disappointment: it removes one error class while the dominant one — a material
-            count that cannot see king safety, structure or activity — is untouched, and it
-            spends real depth to do it (bench nps 21.7 -> 12.9M, so at a fixed clock this
-            build searches shallower than the one it beat). The gain is what survives that
-            trade. Both halves of it reverse as the engine grows: ordering gives the nps
-            back, and PSQT makes the leaf score worth protecting in the first place.
+            `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions:
 
-            So treat this as the *floor* on quiescence's value, measured under the least
-            favourable conditions the engine will ever present. Worth re-running as an
-            ablation once PSQT and ordering land — the roadmap asks for exactly that, and
-            this is the first entry that gives it a baseline to compare against.
+                                    before          after      change
+              nodes             22,088,265     24,356,801      +10.3%
+              wall clock            1.02 s         1.90 s
+              Mnps                    21.7           12.9
 
-            One caution for whoever reads this next: the run was flat for its first ~500
-            games (LLR wandering between -0.19 and +0.09, score 49.5%) and was called a dead
-            heat here before the sample justified it. At elo0=0/elo1=5 a few hundred games
-            cannot separate +20 from 0. Do not read an early SPRT.
+            Nodes rising is the technique: every leaf that was one `evaluate` call is now a
+            search, so nps is not comparable across this commit, only nodes-to-depth.
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 24,356,801.
+
+            **Quiescence is unshippable without victim ordering.** Written first with none,
+            since ordering is the next box:
+
+                                          no victim sort    with victim sort    ratio
+              bench                     7,221,690,584          24,356,801         296x
+              Kiwipete to depth 1          40,144,537              22,411       1,791x
+              queens-loose to depth 1      13,360,907                 944      14,153x
+
+            Ordering cannot change what alpha-beta returns, only how much it visits, so the
+            scores are identical either way — this is search shape, not a wrong answer.
+            Not every position pays: startpos to depth 6 *fell* 213,714 -> 136,299.
+
+            Perft, `perf stat -r 5`, +/-0.00%:
+
+                                    startpos D6      Kiwipete D5
+              main            5,767,740,503    6,363,345,710
+              branch          5,739,901,633    6,385,591,938
+              change                 -0.48%           +0.35%
+
+            That parity was not free. **A comptime parameter costs inlining budget even on
+            the branch that does not take it**: the second generation cost +7.7% before any
+            of it ran, and the masks and the struct field — both obvious suspects — returned
+            3.7 points and 0.04%. A profile found the rest, three helpers pushed out of a
+            `generate` that had been one 76.5% blob. Only a profile separates the two.
+
+            **+21 Elo is a floor.** One error class removed while the dominant one — a
+            material count blind to king safety and activity — is untouched, and depth paid
+            for it (nps 21.7 -> 12.9M). Both reverse as the engine grows: re-run as an
+            ablation once ordering and PSQT land.
