@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
 # Stop hook: refuse to end the turn having padded the prose.
 #
-# CLAUDE.md, docs/testlog.md and ROADMAP.md all already *say* to keep entries to
-# what the measurement can tell you and comments to what is load-bearing. Saying
-# it did not work — the same three files were over-written on three consecutive
-# branches, because a long session builds momentum and a rule you read an hour
-# ago loses to the war story you just lived through. So the rule is checked
-# instead of trusted, the same way guard.sh checks the engine-source rule rather
-# than trusting it.
-#
-# **Every budget below is the repository's own history, not a preference.** They
-# were measured off `main` at the time this was written, and the numbers are
-# quoted at each check so a future reader can re-derive them rather than guess
-# whether they still mean anything.
+# CLAUDE.md, docs/testlog.md and ROADMAP.md already carry these rules. This file
+# does not restate them, it checks them — the same split guard.sh has from the
+# engine-source rule. Every budget is measured off `main` and the derivation is
+# quoted at each check, so it can be re-derived rather than guessed at.
 #
 # There is no override flag on purpose, but there are two right answers to a
 # block, not one. Cut, *or* — if the prose is genuinely already minimal — say so
@@ -50,9 +42,8 @@ say() { printf '%s\n' "$*" >&2; fail=1; }
 
 # --- docs/testlog.md ----------------------------------------------------------
 #
-# One entry per change. `feat/tt` folded its SPRT discussion into its bench entry
-# rather than opening a second one, and that is the convention: a reader looking
-# up a branch should find one place, not two that have to be reconciled.
+# One entry per change — `feat/tt` folded its SPRT into its bench entry. A reader
+# looking up a branch should find one place, not two to reconcile.
 if [[ -f docs/testlog.md ]]; then
   dupe="$(grep -oE '^- branch:[[:space:]]+\S+' docs/testlog.md | awk '{print $3}' \
           | sort | uniq -d)"
@@ -61,8 +52,7 @@ if [[ -f docs/testlog.md ]]; then
     say "$(sed 's/^/  /' <<<"$dupe")"
   fi
 
-  # Entries on main at the time of writing ran 7-53 lines. 60 leaves headroom
-  # over the largest and still catches the 71-line entry that prompted this.
+  # Entries on main ran 7-53 lines; 60 leaves headroom over the largest.
   over="$(awk '
     /^### /   { if (name != "" && n > 60) printf "  %s (%d lines)\n", name, n
                 name = substr($0, 5); n = 0 }
@@ -80,10 +70,8 @@ fi
 
 # --- ROADMAP.md ---------------------------------------------------------------
 #
-# 34 of the 42 items on main are a single line and the longest runs to five. The
-# budget is that longest one: a check that scolds about content already on main
-# is a check that gets ignored. An item needing a paragraph is a testlog entry
-# wearing a checkbox.
+# 34 of the 42 items on main are one line and the longest is five, which is the
+# budget: a check that scolds about content already on main gets ignored.
 if [[ -f ROADMAP.md ]]; then
   long="$(awk '
     /^- \[[ x]\]/ { if (n > 5) printf "  %s (%d lines)\n", substr(item, 1, 60), n
@@ -101,11 +89,9 @@ fi
 
 # --- comment density ----------------------------------------------------------
 #
-# Not a cap on commenting: koji is deliberately comment-heavy and files on main
-# sit between 0.27 and 0.62 comments per line of code. What this catches is
-# *ratcheting* — every branch adding a little more prose than the file already
-# carried, which is how 0.55 becomes 0.63 in one sitting. A file may hold its
-# density or lower it; +0.05 is the tolerance for genuinely new surface.
+# Not a cap: koji is deliberately comment-heavy, and files on main sit between
+# 0.27 and 0.62. This catches *ratcheting* — a file may hold or lower its
+# density, and +0.05 is the tolerance for genuinely new surface.
 ratio() { # ratio <blob-or-path> ; prints hundredths, integer
   local c t
   c="$(grep -cE '^[[:space:]]*//' <<<"$1" || true)"
