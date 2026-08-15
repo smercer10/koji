@@ -102,7 +102,8 @@ pub fn attackersTo(b: *const Board, sq: Square, occ: Bitboard) Bitboard {
 /// Every square `c` attacks under the given occupancy, defended pieces included —
 /// an attack set covers occupied squares regardless of who stands there, which is
 /// exactly what "the king may not go there" needs.
-fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard {
+// `inline` is load-bearing, not decoration: see `GenType`.
+inline fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard {
     var set = attacks.pawnAttacksSet(c, b.pieces(c, .pawn));
     set |= attacks.king_attacks[@intFromEnum(lsb(b.pieces(c, .king)))];
 
@@ -121,10 +122,13 @@ fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard {
 
 /// Whether the side to move stands in check.
 ///
-/// `generate` computes this for itself and cannot hand it back without paying
-/// for the answer at every node that never asks. The search asks in exactly one
-/// place — an empty move list, where the difference between checkmate and
-/// stalemate is the difference between losing and drawing — so it pays there.
+/// `generate` computes this on the way past and returns nothing, because its
+/// callers ask in exactly one place — an empty move list, where the difference
+/// between checkmate and stalemate is the difference between losing and drawing
+/// — and paying `attackersTo` once there is cheaper than widening the signature
+/// every node uses. `generateNoisy` is the opposite case and does hand it back:
+/// quiescence has to know before it can decide whether standing pat is even
+/// allowed, so asking here would be the second computation of the same answer.
 pub fn inCheck(b: *const Board) bool {
     const us = b.side;
     const ksq = lsb(b.pieces(us, .king));
@@ -203,6 +207,13 @@ const Ctx = struct {
     /// Our pieces that may not leave the line through our own king.
     pinned: Bitboard,
 
+    /// `wantedMask` over this node's checkers. **Must stay a comptime branch on
+    /// `gen`, not a stored field** — as a plain `Ctx` field it cost 3.7% of a
+    /// whole perft in loads `.all` has no use for.
+    fn wanted(c: Ctx, comptime gen: GenType) Bitboard {
+        return wantedMask(gen, c.checkers, c.enemy);
+    }
+
     /// The line a piece on `from` is confined to, or all squares if it is free.
     fn pinMask(c: Ctx, from: Square) Bitboard {
         if (c.pinned & from.bit() == 0) return ~@as(Bitboard, 0);
@@ -210,17 +221,63 @@ const Ctx = struct {
     }
 };
 
+/// Which moves a generation is asked for.
+///
+/// **A third member is not free.** The second one cost 7.7% of perft's
+/// instructions by pushing `attackedBy`, `addPawnMoves` and `generateEnPassant`
+/// out of LLVM's inlining budget — hence their `inline`. Profile before adding.
+/// docs/testlog.md, 2026-08-15.
+pub const GenType = enum {
+    /// Every legal move.
+    all,
+    /// Captures and promotions — the moves quiescence searches, and nothing
+    /// else. **In check this falls back to every legal move**, because a
+    /// position in check is not quiet: the side to move has to answer, so the
+    /// evasions are exactly the moves that matter and the capture subset of
+    /// them is not a position anyone can stand pat on.
+    noisy,
+};
+
+/// Which destinations a generation is interested in, on top of what the rules
+/// allow: every square, or — for `.noisy` with the king safe — the enemy pieces,
+/// so that only captures survive.
+///
+/// **In check, `.noisy` asks for everything.** A position in check is not quiet:
+/// the side to move has to answer, so the evasions are the moves that matter and
+/// the captures among them are not a set anyone can stand pat on.
+///
+/// Separate from `Ctx.target` because a quiet promotion is a move `.noisy` wants
+/// that lands on an empty square, which a mask folded into `target` would drop.
+inline fn wantedMask(comptime gen: GenType, checkers: Bitboard, enemy: Bitboard) Bitboard {
+    if (gen == .all) return ~@as(Bitboard, 0);
+    return if (checkers != 0) ~@as(Bitboard, 0) else enemy;
+}
+
 /// Fills `list` with every legal move for the side to move.
 pub fn generate(b: *const Board, list: *MoveList) void {
     list.len = 0;
     // Specialising on the side to move turns every pawn direction, rank mask and
     // castling square below into a comptime constant.
     switch (b.side) {
-        inline else => |us| generateFor(us, b, list),
+        inline else => |us| _ = generateFor(us, .all, b, list),
     }
 }
 
-fn generateFor(comptime us: Color, b: *const Board, list: *MoveList) void {
+/// Fills `list` with the captures and promotions, or with every legal move when
+/// the side to move is in check. **Returns whether it was in check** — the one
+/// thing quiescence cannot work out for itself without repeating `attackersTo`,
+/// and the flag that decides whether standing pat is allowed and whether an
+/// empty list is checkmate or merely a quiet position.
+pub fn generateNoisy(b: *const Board, list: *MoveList) bool {
+    list.len = 0;
+    return switch (b.side) {
+        inline else => |us| generateFor(us, .noisy, b, list),
+    };
+}
+
+/// Returns whether the side to move is in check, which it computes on the way
+/// past regardless of which generation was asked for.
+fn generateFor(comptime us: Color, comptime gen: GenType, b: *const Board, list: *MoveList) bool {
     const them = comptime us.flip();
     const own = b.by_color[@intFromEnum(us)];
     const enemy = b.by_color[@intFromEnum(them)];
@@ -236,13 +293,16 @@ fn generateFor(comptime us: Color, b: *const Board, list: *MoveList) void {
     //         published source found claims it)
     //         via https://www.chessprogramming.org/Square_Attacked_By
     const danger = attackedBy(them, b, occ ^ ksq.bit());
-
-    // King moves first, so that double check — where nothing else may move — is
-    // just an early return rather than a special case.
-    serialize(list, ksq, attacks.king_attacks[@intFromEnum(ksq)] & ~own & ~danger, enemy);
-
     const checkers = attackersTo(b, ksq, occ) & enemy;
-    if (@popCount(checkers) > 1) return;
+
+    // Computed here as well as through `Ctx` because the king is serialised
+    // before a `Ctx` exists — same function, so there is still one rule.
+    const to = wantedMask(gen, checkers, enemy);
+
+    // King moves before the double-check test, so double check — where nothing
+    // else may move — is just an early return rather than a special case.
+    serialize(list, ksq, attacks.king_attacks[@intFromEnum(ksq)] & ~own & ~danger & to, enemy);
+    if (@popCount(checkers) > 1) return true;
 
     const c: Ctx = .{
         .b = b,
@@ -261,9 +321,12 @@ fn generateFor(comptime us: Color, b: *const Board, list: *MoveList) void {
         .pinned = pinnedPieces(us, b, ksq, occ, own),
     };
 
-    generatePieces(us, c, list);
-    generatePawns(us, c, list);
-    if (checkers == 0) generateCastles(us, c, list);
+    generatePieces(us, gen, c, list);
+    generatePawns(us, gen, c, list);
+    // Castling is quiet, and never available in check anyway.
+    if (gen == .all and checkers == 0) generateCastles(us, c, list);
+
+    return checkers != 0;
 }
 
 /// Our pieces that stand alone between our king and an enemy slider.
@@ -296,14 +359,16 @@ fn pinnedPieces(
     return pinned;
 }
 
-fn generatePieces(comptime us: Color, c: Ctx, list: *MoveList) void {
+fn generatePieces(comptime us: Color, comptime gen: GenType, c: Ctx, list: *MoveList) void {
     const b = c.b;
+    const wanted = c.wanted(gen);
 
     // A pinned knight can never move: no knight leap stays on a straight line.
     var knights = b.pieces(us, .knight) & ~c.pinned;
     while (knights != 0) {
         const from = popLsb(&knights);
-        serialize(list, from, attacks.knight_attacks[@intFromEnum(from)] & c.target, c.enemy);
+        const to = attacks.knight_attacks[@intFromEnum(from)] & c.target & wanted;
+        serialize(list, from, to, c.enemy);
     }
 
     const queens = b.pieces(us, .queen);
@@ -311,14 +376,14 @@ fn generatePieces(comptime us: Color, c: Ctx, list: *MoveList) void {
     var diag = b.pieces(us, .bishop) | queens;
     while (diag != 0) {
         const from = popLsb(&diag);
-        const to = attacks.bishopAttacks(from, c.occ) & c.target & c.pinMask(from);
+        const to = attacks.bishopAttacks(from, c.occ) & c.target & wanted & c.pinMask(from);
         serialize(list, from, to, c.enemy);
     }
 
     var orth = b.pieces(us, .rook) | queens;
     while (orth != 0) {
         const from = popLsb(&orth);
-        const to = attacks.rookAttacks(from, c.occ) & c.target & c.pinMask(from);
+        const to = attacks.rookAttacks(from, c.occ) & c.target & wanted & c.pinMask(from);
         serialize(list, from, to, c.enemy);
     }
 }
@@ -329,7 +394,8 @@ fn generatePieces(comptime us: Color, c: Ctx, list: *MoveList) void {
 // origin: set-wise pawn pushes by parallel shift — unclear (folklore; CPW's page
 //         is community-authored and credits no inventor)
 //         via https://www.chessprogramming.org/Pawn_Pushes_(Bitboards)
-fn generatePawns(comptime us: Color, c: Ctx, list: *MoveList) void {
+fn generatePawns(comptime us: Color, comptime gen: GenType, c: Ctx, list: *MoveList) void {
+    const wanted = c.wanted(gen);
     const white = us == .white;
     const up = if (white) board.north else board.south;
     const up_east = if (white) board.northEast else board.southEast;
@@ -348,9 +414,15 @@ fn generatePawns(comptime us: Color, c: Ctx, list: *MoveList) void {
     // The intermediate square of a double push only has to be *empty*; it is not
     // itself a destination, so the target mask is applied after it is used.
     const push1 = up(pawns) & empty;
-    const push2 = up(push1) & empty & double_rank & c.target;
+    const push2 = up(push1) & empty & double_rank & c.target & wanted;
 
-    addPawnMoves(c, list, push1 & c.target, d_up, .quiet, promo_rank);
+    // `wanted | promo_rank` rather than `wanted`, and this is the whole reason
+    // `to` is a mask separate from `target`: a push lands on an empty square, so
+    // a `.noisy` generation masking by `enemy` alone would delete every
+    // promotion that is not also a capture — and a queen promotion is the
+    // largest single swing quiescence exists to see. Both are `~0` for `.all`,
+    // where the OR folds away with them.
+    addPawnMoves(c, list, push1 & c.target & (wanted | promo_rank), d_up, .quiet, promo_rank);
     addPawnMoves(c, list, push2, 2 * d_up, .double_push, 0);
     addPawnMoves(c, list, up_east(pawns) & c.enemy & c.target, d_east, .capture, promo_rank);
     addPawnMoves(c, list, up_west(pawns) & c.enemy & c.target, d_west, .capture, promo_rank);
@@ -373,7 +445,8 @@ fn generatePawns(comptime us: Color, c: Ctx, list: *MoveList) void {
 //         test is required and names no discoverer). Position 3 of the perft
 //         oracle in testdata/perft.epd is the case that exposes it
 //         via https://www.chessprogramming.org/En_passant
-fn generateEnPassant(comptime us: Color, c: Ctx, list: *MoveList, ep: Square, pawns: Bitboard) void {
+// `inline` is load-bearing, not decoration: see `GenType`.
+inline fn generateEnPassant(comptime us: Color, c: Ctx, list: *MoveList, ep: Square, pawns: Bitboard) void {
     const them = comptime us.flip();
     const queens = c.b.pieces(them, .queen);
     const diag = c.b.pieces(them, .bishop) | queens;
@@ -455,7 +528,8 @@ fn serialize(list: *MoveList, from: Square, to_set: Bitboard, enemy: Bitboard) v
 /// `to - delta`. A destination on `promo_rank` expands into four moves; passing 0
 /// for that mask says the shift can never reach a back rank, which is true of a
 /// double push and lets the whole branch fold away.
-fn addPawnMoves(
+// `inline` is load-bearing, not decoration: see `GenType`.
+inline fn addPawnMoves(
     c: Ctx,
     list: *MoveList,
     to_set: Bitboard,
@@ -726,6 +800,29 @@ fn expectSameMoves(oracle: *const MoveList, got: *const MoveList) !void {
     try expectEqualStrings(try listText(oracle, &a), try listText(got, &b));
 }
 
+/// `generateNoisy` against the oracle's own list, filtered. **Filter, never a
+/// second noisy generator** — this way the only thing left to disagree is the
+/// new masks.
+fn expectNoisyAgrees(b: *Board, oracle: *const MoveList) !void {
+    const in_check = inCheck(b);
+
+    var want: MoveList = .{};
+    for (oracle.slice()) |m| {
+        if (in_check or m.kind.isCapture() or m.kind.isPromotion()) want.add(m);
+    }
+
+    var got: MoveList = .{};
+    const reported = generateNoisy(b, &got);
+
+    // The returned flag is load-bearing: quiescence stands pat on it, and a
+    // wrong `false` would let a side in check decline to answer.
+    try expectEqual(in_check, reported);
+    expectSameMoves(&want, &got) catch |err| {
+        std.debug.print("noisy disagreement at:\n{f}\n", .{b});
+        return err;
+    };
+}
+
 /// Walks the whole tree below `b` to `depth`, checking the fast generator against
 /// the oracle at every node on the way.
 fn expectAgreesToDepth(b: *Board, depth: u8) !void {
@@ -738,6 +835,7 @@ fn expectAgreesToDepth(b: *Board, depth: u8) !void {
         std.debug.print("disagreement at:\n{f}\n", .{b});
         return err;
     };
+    try expectNoisyAgrees(b, &slow);
 
     if (depth == 0) return;
     for (fast.slice()) |m| {
@@ -799,6 +897,7 @@ test "the fast generator agrees with the slow oracle deep in a game" {
                     std.debug.print("disagreement at:\n{f}\n", .{b});
                     return err;
                 };
+                try expectNoisyAgrees(&b, &slow);
 
                 if (fast.len == 0) break; // checkmate or stalemate
                 _ = move.makeMove(&b, fast.moves[rng.next() % fast.len]);
@@ -1031,4 +1130,48 @@ test "startpos generates the twenty opening moves" {
         try expect(!m.kind.isCapture());
     }
     try expectEqual(@as(usize, 16), pawns);
+}
+
+// --- the noisy generation ------------------------------------------------------------
+//
+// The walks above catch a wrong mask; these four name which rule broke.
+
+fn expectNoisyMoves(fen: []const u8, expected: []const []const u8) !void {
+    attacks.init();
+    var b = try Board.fromFen(fen);
+    var got: MoveList = .{};
+    _ = generateNoisy(&b, &got);
+
+    var want: MoveList = .{};
+    for (expected) |uci| {
+        want.add(Move.fromUci(&b, uci) orelse return error.TestUnexpectedResult);
+    }
+    try expectSameMoves(&want, &got);
+}
+
+test "a quiet position generates nothing to search" {
+    // One leaked quiet move here turns quiescence into a full-width search.
+    try expectNoisyMoves("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", &.{});
+}
+
+test "a promotion is noisy whether or not it captures" {
+    // a7a8 lands on an empty square — the case a mask on `enemy` alone deletes,
+    // and the larger swing of the two.
+    try expectNoisyMoves("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1", &.{
+        "a7a8q", "a7a8r", "a7a8b", "a7a8n",
+        "a7b8q", "a7b8r", "a7b8b", "a7b8n",
+    });
+}
+
+test "in check every evasion is noisy, not just the captures among them" {
+    // Every legal reply is a quiet king step, so a captures-only generation
+    // returns nothing — and an empty list in check reads as checkmate.
+    try expectNoisyMoves("4r2k/8/8/8/4K3/8/8/8 w - - 0 1", &.{
+        "e4d3", "e4d4", "e4d5", "e4f3", "e4f4", "e4f5",
+    });
+}
+
+test "en passant is noisy though it lands on an empty square" {
+    // The captured pawn is on d5, not the d6 arrived at — so `enemy` misses it.
+    try expectNoisyMoves("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", &.{"e5d6"});
 }

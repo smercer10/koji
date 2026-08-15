@@ -1,10 +1,11 @@
 //! koji — static evaluation.
 //!
 //! Material only, for now. This exists because alpha-beta needs a number at the
-//! leaves, not because it is a good judge of a position: with no quiescence
-//! search above it, a leaf in the middle of a capture sequence is scored as if
-//! the sequence stopped there. PSQT and tapering are their own roadmap boxes and
-//! are what make this function worth reading.
+//! leaves, not because it is a good judge of a position. Quiescence now stands
+//! between it and the search, so it is at least never asked about a position in
+//! the middle of a capture sequence — but it still cannot see king safety, a
+//! passed pawn or a piece with nowhere to go. PSQT and tapering are their own
+//! roadmap boxes and are what make this function worth reading.
 //!
 //! **Every path here stays integer.** Not a style preference: `bench` must print
 //! identical node counts on an AVX2 and a non-AVX2 build (CLAUDE.md), and float

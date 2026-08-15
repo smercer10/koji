@@ -1,9 +1,10 @@
 //! koji — search: negamax with alpha-beta, driven by iterative deepening, over a
-//! transposition table.
+//! transposition table, ending in a quiescence search rather than at a static
+//! score.
 //!
-//! Deliberately nothing else. Quiescence and move ordering beyond "the table's
-//! move, then the previous iteration's best at the root" are each their own
-//! roadmap box, and each is measured against what this file does.
+//! Deliberately nothing else. Move ordering beyond "the table's move, then the
+//! previous iteration's best at the root" is its own roadmap box, and is
+//! measured against what this file does.
 //!
 //! What this file *is* responsible for is being right. Alpha-beta is supposed to
 //! return exactly the score a plain minimax returns over the same tree — it
@@ -494,7 +495,12 @@ pub const Searcher = struct {
         // drawn line back into a won one.
         if (ply > 0 and s.drawnByRule()) return 0;
 
-        if (depth <= 0 or ply >= max_ply) return eval.evaluate(&s.b);
+        // The ceiling answers statically — there is no room left to search in.
+        // Everywhere else the horizon is handed to quiescence rather than to
+        // `evaluate`, which is the whole of this branch: a leaf in the middle of
+        // a capture sequence is not a position a material count can judge.
+        if (ply >= max_ply) return eval.evaluate(&s.b);
+        if (depth <= 0) return s.quiesce(ply, alpha_in, beta);
 
         var alpha = alpha_in;
         var tt_move: ?Move = null;
@@ -580,6 +586,84 @@ pub const Searcher = struct {
         return best;
     }
 
+    /// Searches on past the horizon until nothing is hanging, so `evaluate` is
+    /// only asked about positions it can judge.
+    ///
+    /// **Do not add a ply cap.** Captures are finite and a check can only recur
+    /// here via a capture, so this terminates on its own; a cap is the classic
+    /// wrong fix for a missing stand-pat or an unraised alpha. `ply >= max_ply`
+    /// below is the array bound, not a search limit.
+    //
+    // origin: quiescence search — unclear (folklore; CPW names no originator,
+    //         earliest use it records is Larry Harris, IJCAI 1975)
+    // origin: stand-pat and its prohibition in check — unclear (folklore)
+    //         via https://www.chessprogramming.org/Quiescence_Search
+    fn quiesce(s: *Searcher, ply: u32, alpha_in: Score, beta: Score) Score {
+        // Counted by the caller — `negamax` before delegating, the loop below
+        // before descending. Incrementing here counts every horizon node twice,
+        // which `bench`, `nps` and `go nodes` are all read off.
+        s.pv_len[ply] = 0;
+
+        if (s.nodes & (check_interval - 1) == 0) s.pollLimits();
+        if (s.stopped) return 0;
+
+        if (ply >= max_ply) return eval.evaluate(&s.b);
+
+        // Not `undefined` out of habit: `= .{}` here would `memset` 776 bytes at
+        // what is about to become the most-visited node type in the engine.
+        var list: MoveList = undefined;
+        const in_check = movegen.generateNoisy(&s.b, &list);
+
+        var alpha = alpha_in;
+        var best: Score = -infinity;
+
+        if (in_check) {
+            // No stand-pat: a side in check is not free to decline the reply, so
+            // the static score is not a floor it can claim. An empty list is
+            // therefore checkmate here and not a quiet position — the one place
+            // quiescence can end a game.
+            if (list.len == 0) return -(mate_score - @as(Score, @intCast(ply)));
+        } else {
+            // Stand pat. The floor under every line below: the side to move can
+            // decline all of it and take the position as it stands, so no
+            // capture is ever forced and a losing one is simply not played.
+            best = eval.evaluate(&s.b);
+            if (best >= beta) return best;
+            // **Raising alpha here is not optional.** Standing pat without it
+            // leaves the window as wide as the caller's and is one of the two
+            // bugs that turn quiescence from a small search into an unbounded
+            // one — reported as a 100:1 node ratio against a healthy 7:1.
+            if (best > alpha) alpha = best;
+        }
+
+        for (0..list.len) |i| {
+            selectMostValuableVictim(&s.b, &list, i);
+            const m = list.moves[i];
+            const undo = move.makeMove(&s.b, m);
+            s.nodes += 1;
+            const score = -s.quiesce(ply + 1, -beta, -alpha);
+            move.unmakeMove(&s.b, m, undo);
+
+            if (s.stopped) return 0;
+
+            if (score > best) {
+                best = score;
+                if (score > alpha) {
+                    alpha = score;
+                    if (alpha >= beta) break;
+                }
+            }
+        }
+
+        // Fail-soft, as `negamax` is. Nothing is stored: the table is not probed
+        // or written here, so that this branch's node count and its Elo belong
+        // to quiescence alone. Whether quiescence should use the table at all is
+        // an open question among engine authors — reported as a clear win by
+        // some and a wash by others — which makes it its own measurement rather
+        // than an assumption to bundle in here.
+        return best;
+    }
+
     /// This ply's PV becomes `m` followed by the child's PV.
     fn updatePv(s: *Searcher, ply: u32, m: Move) void {
         s.pv[ply][0] = m;
@@ -617,6 +701,38 @@ fn scoreFromTt(score: i16, ply: u32) Score {
     return value;
 }
 
+/// Swaps the highest-valued victim in `list[i..]` into `list[i]`.
+///
+/// **Not an optimisation — quiescence does not finish without it.** Removing it
+/// costs 296x the nodes (docs/testlog.md, 2026-08-15). Selection sort because
+/// the loop usually cuts off after a few moves.
+//
+// origin: unclear (folklore, common to N+ engines) — most-valuable-victim with
+//         no attacker term; CPW's page names no originator and "MVV without
+//         LVA" is not separately attributed anywhere found
+//         via https://www.chessprogramming.org/MVV-LVA
+fn selectMostValuableVictim(b: *const Board, list: *MoveList, i: usize) void {
+    var best = i;
+    var best_value: Score = -1;
+    for (list.moves[i..list.len], i..) |m, j| {
+        const victim: Score = if (m.kind == .ep_capture)
+            eval.piece_value[@intFromEnum(board.PieceType.pawn)]
+        else if (m.kind.isCapture())
+            eval.piece_value[@intFromEnum(b.pieceAt(m.to).pieceType())]
+        else
+            0;
+        const gained: Score = if (m.kind.isPromotion())
+            eval.piece_value[@intFromEnum(m.kind.promoted())]
+        else
+            0;
+        if (victim + gained > best_value) {
+            best_value = victim + gained;
+            best = j;
+        }
+    }
+    std.mem.swap(Move, &list.moves[i], &list.moves[best]);
+}
+
 /// Swaps `m` to the front of `list` if it is there at all. Preserves nothing
 /// else about the order — at the root, one move ahead of an otherwise unsorted
 /// list is exactly what iterative deepening has to offer.
@@ -649,6 +765,18 @@ pub fn mateDistance(score: Score) ?i32 {
 const testing = std.testing;
 const attacks = @import("attacks.zig");
 
+/// The depth a fixed-depth search test runs at: `gate` on `zig build test`,
+/// `deep` on `zig build test-slow`.
+///
+/// A ply of search test costs ~10x what it did before quiescence, so the gate
+/// gave plies back and `deep` is where they went. **`deep` is the depth the test
+/// ran at on `main`** — written out per site rather than as a shared offset,
+/// which cannot express tests that gave up different amounts.
+fn testDepth(comptime gate: u8, comptime deep: u8) u8 {
+    comptime std.debug.assert(deep >= gate);
+    return if (@import("build_options").slow) deep else gate;
+}
+
 /// The table the tests below run against unless they say otherwise: disabled, so
 /// every probe misses and every store drops.
 ///
@@ -680,12 +808,42 @@ fn searcherWith(fen: ?[]const u8, table: *tt.Table) !*Searcher {
     return s;
 }
 
+/// Quiescence stated declaratively: the best of standing pat and every capture,
+/// with no window and therefore no cutoffs. This is what `quiesce` is supposed
+/// to compute, written the way the rule reads rather than the way it is
+/// searched, so the two can be checked against each other.
+///
+/// **Only the test below may use this.** Hanging it off `referenceMinimax`'s
+/// leaves multiplies two unpruned searches and the gate stops finishing.
+fn referenceQuiesce(s: *Searcher, ply: u32) Score {
+    if (ply >= max_ply) return eval.evaluate(&s.b);
+
+    var list: MoveList = undefined;
+    const in_check = movegen.generateNoisy(&s.b, &list);
+    if (in_check and list.len == 0) return -(mate_score - @as(Score, @intCast(ply)));
+
+    var best: Score = if (in_check) -infinity else eval.evaluate(&s.b);
+    for (list.slice()) |m| {
+        const undo = move.makeMove(&s.b, m);
+        const score = -referenceQuiesce(s, ply + 1);
+        move.unmakeMove(&s.b, m, undo);
+        if (score > best) best = score;
+    }
+    return best;
+}
+
 /// Plain minimax over the same tree: no window, no cutoffs, everything else
 /// identical. Alpha-beta's entire claim is that it returns this number while
 /// visiting fewer nodes, so this is the reference the claim is checked against.
 fn referenceMinimax(s: *Searcher, depth: i32, ply: u32) Score {
     if (ply > 0 and s.drawnByRule()) return 0;
-    if (depth <= 0 or ply >= max_ply) return eval.evaluate(&s.b);
+    if (ply >= max_ply) return eval.evaluate(&s.b);
+    // The real quiescence, at a full window: the leaf has to be the *same*
+    // function on both sides or the comparison is not about alpha-beta any more.
+    // A narrow-window bug in `quiesce` still shows up here rather than hiding,
+    // because the alpha-beta side reaches this same leaf through windows the
+    // reference side never opens.
+    if (depth <= 0) return s.quiesce(ply, -infinity, infinity);
 
     var list: MoveList = undefined;
     movegen.generate(&s.b, &list);
@@ -718,18 +876,18 @@ test "alpha-beta returns exactly the score minimax does" {
     // does not — better information, not a bug. This test is about alpha-beta;
     // asserting it with a table would be asserting something false.
     const cases = .{
-        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4 },
+        .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", testDepth(3, 4) },
         // Kiwipete: castling, pins and a dense capture set.
-        .{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3 },
+        .{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", testDepth(2, 3) },
         // Promotions and an en passant, where scores swing by a queen.
-        .{ "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4 },
+        .{ "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", testDepth(2, 4) },
         // In check at the root: six legal replies, three kinds of escape.
-        .{ "4k3/8/8/8/7b/8/6P1/4K2R w K - 0 1", 4 },
+        .{ "4k3/8/8/8/7b/8/6P1/4K2R w K - 0 1", testDepth(2, 4) },
         // A forced mate inside the tree, which is where a ply adjustment that
         // is off by one shows up as a score and not as a crash.
-        .{ "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", 4 },
+        .{ "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", testDepth(3, 4) },
         // A sparse endgame: few moves, long lines, nothing to capture.
-        .{ "8/8/8/3k4/8/8/3KP3/8 w - - 0 1", 5 },
+        .{ "8/8/8/3k4/8/8/3KP3/8 w - - 0 1", testDepth(4, 5) },
     };
 
     inline for (cases) |case| {
@@ -745,6 +903,92 @@ test "alpha-beta returns exactly the score minimax does" {
     }
 }
 
+/// Positions the unpruned reference can afford, one per rule it must get right.
+/// **Keep them small** — `referenceQuiesce` has no alpha-beta, so a dense
+/// position is not a slow test but one that never finishes.
+const quiescent_sparse = [_][]const u8{
+    // A queen that can take a defended pawn: the smallest losing capture there
+    // is, and the one the horizon test below is built on.
+    "4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1",
+    // Promotions and an en passant, where a single ply swings by a queen.
+    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    // In check at the root: no stand-pat allowed, every evasion searched.
+    "4k3/8/8/8/7b/8/6P1/4K2R w K - 0 1",
+    // Checkmate, in check with nothing legal — quiescence has to score it.
+    "R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1",
+    // Quiet: nothing to capture at all, so stand-pat is the whole answer.
+    "8/8/8/3k4/8/8/3KP3/8 w - - 0 1",
+};
+
+/// Where quiescence is actually hard. No reference can run against these; the
+/// stand-pat floor and termination can, and those are what break here.
+const quiescent_dense = [_][]const u8{
+    // Kiwipete: eight captures at the root and exchanges several plies deep.
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    // Both queens loose — the shape that blows an unordered quiescence up.
+    "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+};
+
+test "quiescence returns exactly what the rule it implements returns" {
+    // The minimax test above, for the other half of the search. Catches a
+    // stand-pat cutting on the wrong side of beta, an alpha never raised after
+    // it, and a mate score that forgot its ply.
+    for (quiescent_sparse) |fen| {
+        const s = try searcher(fen);
+        defer testing.allocator.destroy(s);
+
+        const expected = referenceQuiesce(s, 0);
+        const actual = s.quiesce(0, -infinity, infinity);
+        testing.expectEqual(expected, actual) catch |err| {
+            std.debug.print("quiescence mismatch in {s}\n", .{fen});
+            return err;
+        };
+    }
+}
+
+test "quiescence never scores below standing pat" {
+    // Returning the best *capture* instead of the best of {stand pat, captures}
+    // fails here wherever every capture loses material. Includes the dense
+    // positions: needs no reference, and doubles as a termination check.
+    for (quiescent_sparse ++ quiescent_dense) |fen| {
+        const s = try searcher(fen);
+        defer testing.allocator.destroy(s);
+        if (movegen.inCheck(&s.b)) continue; // no stand-pat when in check
+
+        try testing.expect(s.quiesce(0, -infinity, infinity) >= eval.evaluate(&s.b));
+    }
+}
+
+test "quiescence scores a mate rather than standing pat in check" {
+    // The one place quiescence ends a game. Getting this wrong reads from
+    // outside exactly like a TT collision, hence its own test.
+    const s = try searcher("R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1");
+    defer testing.allocator.destroy(s);
+
+    try testing.expectEqual(-mate_score, s.quiesce(0, -infinity, infinity));
+    // ...and one ply further down it is one point less bad, so the search still
+    // prefers the mate that takes longer to arrive.
+    try testing.expectEqual(-(mate_score - 3), s.quiesce(3, -infinity, infinity));
+}
+
+test "a queen taken at the horizon is no longer counted as won material" {
+    // d5 is defended by e6, so Qxd5 wins a pawn and loses a queen one ply later.
+    // Scoring leaves statically, depth 1 sees only the pawn: +800, best move.
+    const s = try searcher("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1");
+    defer testing.allocator.destroy(s);
+
+    const result = s.search(.{ .depth = 1 }, null);
+
+    // Two pawns down for Black and nothing given away: the queen keeps its
+    // distance and the score is the material already on the board.
+    try testing.expectEqual(@as(Score, 700), result.score);
+
+    var buf: [8]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try result.move.?.format(&w);
+    try testing.expect(!std.mem.eql(u8, "d1d5", w.buffered()));
+}
+
 test "a narrow window never changes which side of it the true score falls on" {
     // Alpha-beta is only score-exact inside its window; outside it, fail-soft
     // promises a *bound*. That bound is what a transposition table will store,
@@ -753,14 +997,15 @@ test "a narrow window never changes which side of it the true score falls on" {
     const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
     defer testing.allocator.destroy(s);
 
-    const truth = s.negamax(3, 0, -infinity, infinity);
+    const depth = testDepth(2, 3);
+    const truth = s.negamax(depth, 0, -infinity, infinity);
 
     var offset: Score = -300;
     while (offset <= 300) : (offset += 100) {
         const alpha = truth + offset;
         const beta = alpha + 1;
         s.root_best = null;
-        const bound = s.negamax(3, 0, alpha, beta);
+        const bound = s.negamax(depth, 0, alpha, beta);
         if (truth >= beta) {
             try testing.expect(bound >= beta);
         } else if (truth <= alpha) {
@@ -785,7 +1030,7 @@ test "every move of the principal variation is legal" {
         const s = try searcher(fen);
         defer testing.allocator.destroy(s);
 
-        const result = s.search(.{ .depth = 4 }, null);
+        const result = s.search(.{ .depth = testDepth(3, 4) }, null);
         const pv = s.pv[0][0..s.pv_len[0]];
         try testing.expect(pv.len > 0);
         try testing.expectEqual(result.move.?, pv[0]);
@@ -950,7 +1195,7 @@ test "the board is restored exactly by a search" {
     defer testing.allocator.destroy(s);
 
     const before = s.b;
-    _ = s.search(.{ .depth = 4 }, null);
+    _ = s.search(.{ .depth = testDepth(3, 4) }, null);
 
     try testing.expectEqual(before.hash, s.b.hash);
     try testing.expectEqual(before.hash, s.b.computeHash());
@@ -966,8 +1211,8 @@ test "a search is deterministic" {
     const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
     defer testing.allocator.destroy(s);
 
-    const first = s.search(.{ .depth = 4 }, null);
-    const second = s.search(.{ .depth = 4 }, null);
+    const first = s.search(.{ .depth = testDepth(3, 4) }, null);
+    const second = s.search(.{ .depth = testDepth(3, 4) }, null);
 
     try testing.expectEqual(first.nodes, second.nodes);
     try testing.expectEqual(first.score, second.score);
@@ -1124,12 +1369,12 @@ test "searching the previous best move first does not change the score" {
 
     const deepened = try searcher(fen);
     defer testing.allocator.destroy(deepened);
-    const with_ordering = deepened.search(.{ .depth = 4 }, null).score;
+    const with_ordering = deepened.search(.{ .depth = testDepth(2, 4) }, null).score;
 
     const cold = try searcher(fen);
     defer testing.allocator.destroy(cold);
     cold.root_best = null;
-    const without_ordering = cold.negamax(4, 0, -infinity, infinity);
+    const without_ordering = cold.negamax(testDepth(2, 4), 0, -infinity, infinity);
 
     try testing.expectEqual(without_ordering, with_ordering);
 }
@@ -1167,11 +1412,11 @@ test "a table small enough to collide on every node still produces a legal PV" {
         const s = try searcherWith(fen, &table);
         defer testing.allocator.destroy(s);
 
-        // Depth 4, as the table-off version of this test uses: what makes this
-        // one sharp is the two slots, not the depth, and every extra ply here is
-        // paid by `zig build test` on every turn.
+        // The same ladder the table-off version of this test climbs: what makes
+        // this one sharp is the two slots, not the depth, and every extra ply
+        // here is paid by `zig build test` on every turn.
         var depth: u8 = 1;
-        while (depth <= 4) : (depth += 1) {
+        while (depth <= testDepth(3, 4)) : (depth += 1) {
             const result = s.search(.{ .depth = depth }, null);
             const pv = s.pv[0][0..s.pv_len[0]];
             try testing.expect(pv.len > 0);
@@ -1211,17 +1456,24 @@ test "a table small enough to collide on every node still produces a legal PV" {
 test "the table is used, and searching with one costs fewer nodes" {
     // The test that fires if the table is wired up but never actually hit — a
     // probe that always misses breaks nothing else in this file.
-    const fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+    //
+    // A pawn endgame rather than Kiwipete, and that is the *sharper* choice as
+    // well as the cheaper one. Transpositions are what this test is about, and a
+    // position with four pieces and no capture available at all is where move
+    // orders converge hardest — while costing quiescence nothing, since it has
+    // nothing to search. Kiwipete measured the same claim through several
+    // seconds of capture tree that had no bearing on it.
+    const fen = "8/8/8/3k4/8/8/3KP3/8 w - - 0 1";
 
     const without = try searcher(fen);
     defer testing.allocator.destroy(without);
-    const cold = without.search(.{ .depth = 5 }, null);
+    const cold = without.search(.{ .depth = 6 }, null);
 
     var table = try realTable();
     defer table.deinit(testing.allocator);
     const with = try searcherWith(fen, &table);
     defer testing.allocator.destroy(with);
-    const warm = with.search(.{ .depth = 5 }, null);
+    const warm = with.search(.{ .depth = 6 }, null);
 
     try testing.expect(warm.nodes < cold.nodes);
     try testing.expect(table.hashfull() > 0);
@@ -1337,9 +1589,9 @@ test "a search with the table is deterministic from a cleared one" {
     defer testing.allocator.destroy(s);
 
     table.clear();
-    const first = s.search(.{ .depth = 5 }, null);
+    const first = s.search(.{ .depth = testDepth(3, 5) }, null);
     table.clear();
-    const second = s.search(.{ .depth = 5 }, null);
+    const second = s.search(.{ .depth = testDepth(3, 5) }, null);
 
     try testing.expectEqual(first.nodes, second.nodes);
     try testing.expectEqual(first.score, second.score);

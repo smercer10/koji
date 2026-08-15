@@ -271,3 +271,64 @@ implementation site — restating them here is how this file stops being worth r
             spent so far. At an effective branching factor of 5.7 (entry above) that assumption is
             conservative, and move ordering will change the branching factor it is guessing about.
             Re-measure then.
+
+### 2026-08-15 — Quiescence search
+- branch:   feat/qsearch
+- type:     SPRT + bench + perft
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS** — H1 accepted
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +21.27 +/- 9.83 (nElo +27.63 +/- 12.73, LOS 100.00%)
+- games:    2862 (971-796-1095), 53.06%, draw ratio 34.17%, Ptnml [107,298,489,387,150]
+- bench:    24356801 (was 22088265)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path; SPRT at concurrency 14, 1t/16MB per engine
+- notes:    The first SPRT this project could run: the two entries above declined one because
+            the binaries were the same player at fixed depth, then because a clock-aware
+            build against a fixed-depth one measures which side flags. 1h32m, 31 games/min.
+
+            **Do not read an early SPRT.** This sat at 49.5% for ~500 games, LLR in
+            (-0.19, +0.09), and was called a dead heat before the sample justified it. At
+            elo0=0/elo1=5 a few hundred games cannot separate +20 from 0.
+
+            `testdata/bench.epd`, 16 positions, depth 6, table cleared between positions:
+
+                                    before          after      change
+              nodes             22,088,265     24,356,801      +10.3%
+              wall clock            1.02 s         1.90 s
+              Mnps                    21.7           12.9
+
+            Nodes rising is the technique: every leaf that was one `evaluate` call is now a
+            search, so nps is not comparable across this commit, only nodes-to-depth.
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 24,356,801.
+
+            **Quiescence is unshippable without victim ordering.** Written first with none,
+            since ordering is the next box:
+
+                                          no victim sort    with victim sort    ratio
+              bench                     7,221,690,584          24,356,801         296x
+              Kiwipete to depth 1          40,144,537              22,411       1,791x
+              queens-loose to depth 1      13,360,907                 944      14,153x
+
+            Ordering cannot change what alpha-beta returns, only how much it visits, so the
+            scores are identical either way — this is search shape, not a wrong answer.
+            Not every position pays: startpos to depth 6 *fell* 213,714 -> 136,299.
+
+            Perft, `perf stat -r 5`, +/-0.00%:
+
+                                    startpos D6      Kiwipete D5
+              main            5,767,740,503    6,363,345,710
+              branch          5,739,901,633    6,385,591,938
+              change                 -0.48%           +0.35%
+
+            That parity was not free. **A comptime parameter costs inlining budget even on
+            the branch that does not take it**: the second generation cost +7.7% before any
+            of it ran, and the masks and the struct field — both obvious suspects — returned
+            3.7 points and 0.04%. A profile found the rest, three helpers pushed out of a
+            `generate` that had been one 76.5% blob. Only a profile separates the two.
+
+            **+21 Elo is a floor.** One error class removed while the dominant one — a
+            material count blind to king safety and activity — is untouched, and depth paid
+            for it (nps 21.7 -> 12.9M). Both reverse as the engine grows: re-run as an
+            ablation once ordering and PSQT land.

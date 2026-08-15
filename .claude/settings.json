@@ -1,6 +1,5 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-
   "permissions": {
     "allow": [
       "Bash(zig build:*)",
@@ -25,7 +24,6 @@
       "WebFetch(domain:ziglang.org)",
       "WebFetch(domain:github.com)"
     ],
-
     "deny": [
       "Bash(gh issue comment:*)",
       "Bash(gh pr comment:*)",
@@ -35,7 +33,6 @@
       "WebFetch(domain:raw.githubusercontent.com)"
     ]
   },
-
   "hooks": {
     "PreToolUse": [
       {
@@ -65,6 +62,10 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/prose.sh"
           }
         ]
       }

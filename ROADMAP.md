@@ -56,7 +56,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       `bench`
 - [x] Transposition table
 - [x] A minimal `go wtime/btime` budget — a soft and a hard deadline off the clock
-- [ ] Quiescence search
+- [x] Quiescence search — carries a most-valuable-victim sort inside quiescence only
 - [ ] MVV-LVA + SEE move ordering, killers, history
 - [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
