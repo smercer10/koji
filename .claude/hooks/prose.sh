@@ -14,9 +14,17 @@
 # quoted at each check so a future reader can re-derive them rather than guess
 # whether they still mean anything.
 #
-# There is no override flag on purpose. If a budget is genuinely wrong for a
-# change, that is a conversation with the human, who is the final gate anyway —
-# raising it silently from inside the session is the exact failure this prevents.
+# There is no override flag on purpose, but there are two right answers to a
+# block, not one. Cut, *or* — if the prose is genuinely already minimal — say so
+# to the human and let them decide. Trimming a load-bearing comment because a
+# ratio said to is the same defect in the other direction, and this file would
+# rather be argued with than obeyed into deleting something that was holding a
+# rule up.
+#
+# That second path already works: Claude Code re-runs Stop hooks after a block
+# and the `stop_hook_active` guard below passes on the second run, so a turn that
+# states its case can still end. Stating it is the price, and that is the point —
+# the human sees the disagreement instead of the budget quietly winning.
 set -uo pipefail
 
 input="$(cat)"
@@ -64,9 +72,9 @@ if [[ -f docs/testlog.md ]]; then
   if [[ -n "$over" ]]; then
     say "testlog: entry over the 60-line budget (existing entries run 7-53):"
     say "$over"
-    say "  Keep what only the measurement can tell you. What the code does, what"
-    say "  bugs turned up and why a design was chosen belong in git log and in"
-    say "  comments at the implementation site."
+    say "  Keep what only the measurement can tell you — what the code does, what"
+    say "  bugs turned up and why a design was chosen are in git log and at the"
+    say "  implementation site. If it is already only numbers, say so and ask."
   fi
 fi
 
@@ -86,7 +94,7 @@ if [[ -f ROADMAP.md ]]; then
     END           { if (item != "" && n > 5) printf "  %s (%d lines)\n", substr(item, 1, 60), n }
   ' ROADMAP.md)"
   if [[ -n "$long" ]]; then
-    say "ROADMAP: item over 5 lines — say it in one and let the testlog carry the rest:"
+    say "ROADMAP: item over 5 lines — say it in one, or make the case for the rest:"
     say "$long"
   fi
 fi
@@ -115,8 +123,11 @@ while IFS= read -r f; do
   (( was == 0 )) && was=62
   if (( now > was + 5 )); then
     say "comments: $f is at 0.$(printf '%02d' "$now") comments/code, was 0.$(printf '%02d' "$was")."
-    say "  Cut to what is load-bearing — a comment earns its place by stopping"
-    say "  someone breaking the rule it guards, not by recording what happened."
+    say "  A comment earns its place by stopping someone breaking the rule it"
+    say "  guards, not by recording what happened. **If you have already cut to"
+    say "  that and the density still says no, stop and put the case to the"
+    say "  human** — name the comments and what each one prevents. Do not keep"
+    say "  cutting past the point where the file stops explaining itself."
   fi
 done < <({ git diff --name-only "$base"...HEAD -- 'src/*.zig'
            git diff --name-only -- 'src/*.zig'; } | sort -u)
