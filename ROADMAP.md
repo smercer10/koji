@@ -61,8 +61,14 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
-**Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference; plays a
-complete game on Lichess.
+**Exit criterion:** full UCI compliance; wins a match against a known ~1800 reference.
+**Met — Phase 2 complete.** 81.0% against Stockfish 18 held at `UCI_Elo 1800`, 100 games at 8+0.08
+(81-19-0, +251.89 +/- 85.74, LOS 100%, no timeouts; docs/testlog.md, 2026-08-16).
+
+> Stockfish is GPL-3.0 and is run as a binary opponent under fastchess, so rule 1 holds. **Its
+> limiter is not CCRL-calibrated** — "~1800" is Stockfish's own scale, so this is not a rating
+> estimate for koji. What it establishes is that koji plays complete, legal, clock-respecting games
+> and wins them. The Lichess leg moved to the Phase 6 box below.
 
 > **Decide before the first public build:** release tags `v<major>.<minor>.<patch>` start at this
 > phase's exit — the first time anyone else runs the binary — with major = generational change
@@ -112,7 +118,7 @@ hand-picked ones under SPRT.
 
 ## Phase 6 — Competition & contribution
 
-- [ ] Lichess BOT deployment
+- [ ] Lichess BOT deployment, including the complete game that was Phase 2's third exit condition
 - [ ] OpenBench instance
 - [ ] Tournament entry
 - [ ] Published novelties list with ablation results
@@ -204,3 +210,38 @@ commitment to implement it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
   playing it. Twice the entries in the same memory, against the wrong-position hits the check has to
   catch. `isPseudoLegal` does not exist yet and is the risk, not the packing.
+
+From the Phase 2 boundary review (2026-08-16), none taken there: that branch had to stay
+bench-neutral to prove its fixes were, and each of these moves the tree or is a refactor of its own.
+
+- Take the stand-pat cutoff **before** `generateNoisy`, not after. Quiescence is the most-visited
+  node type and it currently generates a full noisy list — including the king-danger sweep the
+  testlog puts at ~79% of a `generate()` call — then discards it whenever the node stands pat at or
+  above beta, which is the common case. `movegen.inCheck` first is one `attackersTo` against the
+  whole army sweep. Node counts cannot move, so this is `/bench`.
+- Try the table's move before generating anything. Most interior nodes are cut-nodes and the table's
+  move causes the cutoff most of the time, so the `generate` plus the full scoring pass are thrown
+  away at a large fraction of nodes. koji is unusually well placed for it: `Entry.key` is the full
+  64 bits, so the move is legal by construction and needs no `isPseudoLegal`.
+- Lazy SEE: score captures optimistically and call `see.winning` only when `next` selects one. The
+  cost is already measured — 10.65M -> 7.98M nps when SEE landed — and in quiescence the waste is
+  structural, since the loop breaks at the first losing capture after scoring all of them.
+- `@prefetch` on the TT probe — named on CLAUDE.md's performance surface and used nowhere yet. The
+  child's slot is known the moment `makeMove` returns.
+- `Ordered.scores` as `i16` rather than `Score`. They are ranks, never mixed with a search score, and
+  `next` rescans the tail once per selected move — halving the bytes it streams also halves
+  `Ordered` from 2312 to 1544 bytes of stack per node.
+- **Stop taking TT cutoffs at PV nodes.** The boundary review fixed only the reporting half of the
+  collapsed principal variation; a bound is not a variation, so the line is still short. SPRT.
+- Repetition detection inside quiescence — the fifty-move half landed at the boundary, this half
+  did not. What it costs, and why that was not obviously worth paying, is at the site in
+  `search.zig`.
+- Seed the root fallback from the ordering rather than `root.moves[0]`. An abort before the first
+  iteration finishes currently answers with whatever movegen emitted first — `go nodes 1` from the
+  start position plays `b1a3` — the same hazard the comment on `best_move` warns about inside
+  `negamax`, accepted at the root without one.
+- Three structural cleanups the review argued for and the close did not take, since each is a
+  refactor rather than a fix: pair make/unmake with the repetition push as one `descend`/`ascend`
+  operation so the invariant is structural; give `Engine` the transposition table so ownership is
+  not split three ways across a stack local, a borrow and `applyOption`; replace the stop flag with
+  a search epoch so `clearStop` and its three call sites disappear.

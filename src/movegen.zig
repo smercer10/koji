@@ -136,6 +136,23 @@ pub fn inCheck(b: *const Board) bool {
     return attackersTo(b, ksq, b.occupancy()) & b.by_color[@intFromEnum(us.flip())] != 0;
 }
 
+/// Is `m` legal in `b`? Generates and scans, so it costs a full `generate` — it
+/// is for the places that ask once, not for anything per-node.
+///
+/// Lives here rather than at its callers because one of them is the guard that
+/// stops `makeMove` running on a move off stdin, which `legalPosition` below
+/// documents as memory-unsafe in a release build. That guard and the tests that
+/// claim to cover it have to compare moves the same way, and inlining the scan
+/// at each site is what lets them drift apart.
+pub fn isLegal(b: *const Board, m: Move) bool {
+    var list: MoveList = undefined;
+    generate(b, &list);
+    for (list.slice()) |legal| {
+        if (legal.eql(m)) return true;
+    }
+    return false;
+}
+
 // --- position preconditions -----------------------------------------------------------
 
 pub const IllegalPosition = error{IllegalPosition};
@@ -809,7 +826,7 @@ fn expectNoisyAgrees(b: *Board, oracle: *const MoveList) !void {
 
     var want: MoveList = .{};
     for (oracle.slice()) |m| {
-        if (in_check or m.kind.isCapture() or m.kind.isPromotion()) want.add(m);
+        if (in_check or m.kind.isNoisy()) want.add(m);
     }
 
     var got: MoveList = .{};

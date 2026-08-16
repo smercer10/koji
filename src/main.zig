@@ -317,6 +317,11 @@ const Engine = struct {
     /// Set from dispatch until `runSearch` has written its `bestmove`. Read
     /// through `searchLive`, never directly.
     searching: std.atomic.Value(bool) = .init(false),
+    /// Suppresses the `bestmove` of a search a board-mutating command cut short.
+    /// **Guarded by `out_lock`, and a plain bool for that reason**: set and
+    /// tested inside the same critical section that writes the line, which
+    /// closes the window where the search answers between the two.
+    cancelled: bool = false,
 
     /// Blocks until no search is running. Every command that touches the board
     /// goes through here first, which is what makes "one writer at a time" true
@@ -327,6 +332,29 @@ const Engine = struct {
             t.join();
             e.thread = null;
         }
+    }
+
+    /// Stops a running search *without* letting it answer.
+    ///
+    /// `ucinewgame` and `position` change the board under a search still reading
+    /// it, so they must join first — but a plain `joinSearch` makes that search
+    /// print a `bestmove` the GUI never asked for, in a position just replaced.
+    /// Refusing instead, as `applyOption` does, is not open to these two: a
+    /// dropped `setoption` leaves the engine correct, a dropped `position`
+    /// leaves it searching what the GUI does not believe it is on.
+    fn cancelSearch(e: *Engine) void {
+        // **`searchLive`, never `thread != null`.** Only a join clears `thread`,
+        // so a finished search that already printed its `bestmove` still leaves
+        // it set — the state every `position` between two moves arrives in.
+        // Arming against one of those swallows the *next* search's `bestmove`,
+        // and a silent engine loses on time.
+        if (!e.searchLive()) return;
+        {
+            e.out_lock.lockUncancelable(e.io);
+            defer e.out_lock.unlock(e.io);
+            e.cancelled = true;
+        }
+        e.joinSearch();
     }
 
     /// Whether a search is running. **Not `thread != null`**: only a join clears
@@ -415,14 +443,14 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
             // search is running, and that is exactly when a GUI uses it.
             engine.say("readyok\n");
         } else if (eql(token, "ucinewgame")) {
-            engine.joinSearch();
-            // Joined first: the table belongs to whichever thread is running,
-            // and clearing it under a live search would be a data race as well
-            // as nonsense.
+            // Cancelled, not joined: clearing the table under a live search is
+            // a data race, and a plain join would answer for a game being
+            // thrown away.
+            engine.cancelSearch();
             table.clear();
             searcher.setPosition(Board.startpos);
         } else if (eql(token, "position")) {
-            engine.joinSearch();
+            engine.cancelSearch();
             if (!setPosition(searcher, &it)) {
                 engine.say("info string position command not understood, position unchanged\n");
             }
@@ -458,8 +486,14 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
 fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) bool {
     const kind = it.next() orelse return false;
 
+    // **Validated on a scratch board, committed only once the whole command
+    // parses.** Applying moves straight to `s` and failing partway leaves the
+    // engine on neither the old position nor the requested one, while the
+    // caller reports "position unchanged" and the next `go` answers from it.
+    var scratch: Board = undefined;
+
     if (eql(kind, "startpos")) {
-        s.setPosition(Board.startpos);
+        scratch = Board.startpos;
     } else if (eql(kind, "fen")) {
         // The FEN is six space-separated fields, but a truncated one is common
         // enough that the parser takes whatever is there up to `moves`.
@@ -476,24 +510,40 @@ fn setPosition(s: *search.Searcher, it: *std.mem.TokenIterator(u8, .any)) bool {
             @memcpy(fen_buf[len..][0..field.len], field);
             len += field.len;
         }
-        s.setPosition(movegen.fromFen(fen_buf[0..len]) catch return false);
+        scratch = movegen.fromFen(fen_buf[0..len]) catch return false;
     } else {
         return false;
     }
 
-    const moves = it.next() orelse return true;
+    const base = scratch;
+
+    const moves = it.next() orelse {
+        s.setPosition(base);
+        return true;
+    };
     if (!eql(moves, "moves")) return false;
 
+    // Two passes rather than a buffer of parsed moves: a `position ... moves`
+    // line has no length UCI will promise, so anything that holds the moves
+    // has a cap that rejects a long game.
+    var replay = it.*;
     while (it.next()) |text| {
-        const m = Move.fromUci(&s.b, text) orelse return false;
-        var list: movegen.MoveList = undefined;
-        movegen.generate(&s.b, &list);
-        for (list.slice()) |legal| {
-            if (@as(u16, @bitCast(legal)) == @as(u16, @bitCast(m))) {
-                s.playMove(m);
-                break;
-            }
-        } else return false;
+        const m = Move.fromUci(&scratch, text) orelse return false;
+        if (!movegen.isLegal(&scratch, m)) return false;
+        _ = move_mod.makeMove(&scratch, m);
+    }
+
+    s.setPosition(base);
+    while (replay.next()) |text| {
+        // Cannot fail: `s.b` walks the same positions `scratch` just did, and
+        // the pass above proved every move legal in each of them. Handled
+        // rather than asserted because `unreachable` is undefined behaviour in
+        // a release build, and this one guards a `makeMove`.
+        const m = Move.fromUci(&s.b, text) orelse {
+            s.setPosition(base);
+            return false;
+        };
+        s.playMove(m);
     }
     return true;
 }
@@ -530,7 +580,11 @@ fn parseLimits(it: *std.mem.TokenIterator(u8, .any), side: board.Color) search.L
             // Parsed wide, then clamped. A `u8` here would wrap `go depth 1000`
             // into a parse failure and silently fall back to `default_depth`.
             const requested = parseNext(u32, it) orelse continue;
-            limits.depth = @intCast(@min(requested, search.max_ply));
+            // Floored at 1, not merely capped: `go depth 0` sets `bounded` and
+            // so escapes the `default_depth` fallback, leaving the deepening
+            // loop to run no iteration at all and answer with an unsearched
+            // seed.
+            limits.depth = @intCast(std.math.clamp(requested, 1, search.max_ply));
             bounded = true;
         } else if (eql(token, "nodes")) {
             limits.nodes = parseNext(u64, it) orelse continue;
@@ -681,6 +735,12 @@ fn applyOption(e: *Engine, allocator: std.mem.Allocator, rest: []const u8) void 
         // than it asked for and should hear so.
         const got = e.searcher.tt.allocatedMb();
         if (got != mb) e.sayFmt("info string Hash {d} rounded down to {d}MB\n", .{ mb, got });
+    } else if (build_options.tunables and std.ascii.eqlIgnoreCase(opt.name, "TunableExample")) {
+        // `identify` advertises this under the same flag, so refusing it here
+        // would have an SPSA driver record a sweep that never reached the
+        // engine — UCI gives it no error reply to notice. Clamped and discarded
+        // as `Threads` is; Phase 5's real knobs replace the placeholder.
+        _ = optionValue(e, opt, 1, 1000) orelse return;
     } else if (std.ascii.eqlIgnoreCase(opt.name, "Threads")) {
         // Discarded deliberately: at `max_threads` 1 the only value this yields
         // is the one koji already runs at, so a field to hold it could not vary.
@@ -700,6 +760,15 @@ fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
     // Armed here rather than inside the search: a `stop` can arrive before the
     // thread reaches its first node, and clearing it there would swallow it.
     e.searcher.clearStop();
+    // A `go` is a request for an answer, so nothing left over may suppress one.
+    // Second lock on a door `cancelSearch` already closes, and deliberately so:
+    // the failure mode is an engine that stops answering rather than one that
+    // answers wrongly.
+    {
+        e.out_lock.lockUncancelable(e.io);
+        defer e.out_lock.unlock(e.io);
+        e.cancelled = false;
+    }
     // Before the spawn for the same reason: `searchLive` can be asked before the
     // new thread runs an instruction.
     e.searching.store(true, .release);
@@ -719,7 +788,12 @@ fn runSearch(e: *Engine, limits: search.Limits) void {
     {
         e.out_lock.lockUncancelable(e.io);
         defer e.out_lock.unlock(e.io);
-        if (result.move) |m| {
+        if (e.cancelled) {
+            // A board-mutating command took the position out from under this
+            // search. Answering now would name a move in a position that no
+            // longer exists; the command that cancelled it is the answer.
+            e.cancelled = false;
+        } else if (result.move) |m| {
             e.out.print("bestmove {f}\n", .{m}) catch {};
         } else {
             // No legal move: the game is over. UCI has no better spelling than
@@ -864,6 +938,50 @@ test "a release build advertises no tuning options" {
     }
 }
 
+test "every advertised option is one setoption accepts" {
+    // **Runs in both builds, unlike the test above**, which skips itself under
+    // `-Dtunables` and so leaves that build's `uci` block checked by nothing.
+    // Asserted against `applyOption`'s replies rather than its source, so the
+    // advertised set and the handled set cannot drift apart silently.
+    attacks.init();
+    const s = try std.testing.allocator.create(search.Searcher);
+    defer std.testing.allocator.destroy(s);
+    var table: tt.Table = try .init(std.testing.allocator, 1);
+    defer table.deinit(std.testing.allocator);
+    s.init(std.testing.io, &table);
+
+    var advertised: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&advertised);
+    try identify(&w);
+    const uci_block = w.buffered();
+
+    var lines = std.mem.tokenizeScalar(u8, uci_block, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "option name ")) continue;
+        const name = std.mem.sliceTo(line["option name ".len..], ' ');
+
+        // A spin option's own advertised default has to be a value it accepts.
+        const default = blk: {
+            const at = std.mem.indexOf(u8, line, " default ") orelse break :blk "1";
+            break :blk std.mem.sliceTo(line[at + " default ".len ..], ' ');
+        };
+
+        var reply: [512]u8 = undefined;
+        var rw: Io.Writer = .fixed(&reply);
+        var e: Engine = .{ .io = std.testing.io, .searcher = s, .out = &rw };
+
+        var request: [256]u8 = undefined;
+        const rest = try std.fmt.bufPrint(&request, "name {s} value {s}", .{ name, default });
+        applyOption(&e, std.testing.allocator, rest);
+
+        const said = rw.buffered();
+        std.testing.expect(std.mem.indexOf(u8, said, "unknown option") == null) catch |err| {
+            std.debug.print("advertised but not accepted: {s} -> {s}\n", .{ name, said });
+            return err;
+        };
+    }
+}
+
 test "setoption splits a name from a value at the `value` token" {
     const expectOption = struct {
         fn f(rest: []const u8, name: []const u8, value: ?[]const u8) !void {
@@ -917,19 +1035,41 @@ test "a spin value is a number or nothing, and never an error for being extreme"
     try std.testing.expectEqual(@as(?i64, null), spinValue("12x"));
 }
 
-test "a resized table is the size Hash asked for, rounded down" {
-    // The engine-side path is covered by tt.zig's own resize test; this pins the
-    // conversion `applyOption` reports back to the GUI, which is where a
-    // rounded-down request has to stop being invisible.
-    var t: tt.Table = try .init(std.testing.allocator, 16);
-    defer t.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 16), t.allocatedMb());
+test "Hash reports the size it actually got when the request rounds down" {
+    // **Through `applyOption`, not `tt.Table` directly.** tt.zig already pins
+    // its own rounding beside the code; the *message* back to the GUI is the
+    // part that lives here, and is what this covers.
+    attacks.init();
+    const s = try std.testing.allocator.create(search.Searcher);
+    defer std.testing.allocator.destroy(s);
+    var table: tt.Table = try .init(std.testing.allocator, 16);
+    defer table.deinit(std.testing.allocator);
+    s.init(std.testing.io, &table);
 
-    try t.resize(std.testing.allocator, 3);
-    try std.testing.expectEqual(@as(usize, 2), t.allocatedMb());
+    const say = struct {
+        fn f(e: *Engine, allocator: std.mem.Allocator, rest: []const u8, buf: []u8) []const u8 {
+            var w: Io.Writer = .fixed(buf);
+            e.out = &w;
+            applyOption(e, allocator, rest);
+            return w.buffered();
+        }
+    }.f;
 
-    try t.resize(std.testing.allocator, 64);
-    try std.testing.expectEqual(@as(usize, 64), t.allocatedMb());
+    var buf: [512]u8 = undefined;
+    var sink: Io.Writer = .fixed(&buf);
+    var e: Engine = .{ .io = std.testing.io, .searcher = s, .out = &sink };
+
+    // An exact fit is quiet: nothing lost, nothing to report.
+    var quiet_buf: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("", say(&e, std.testing.allocator, "name Hash value 64", &quiet_buf));
+    try std.testing.expectEqual(@as(usize, 64), s.tt.allocatedMb());
+
+    // 3MB buys two — a power of two entries — and a GUI that asked for three
+    // has no other way to find out it got less.
+    var rounded_buf: [512]u8 = undefined;
+    const rounded = say(&e, std.testing.allocator, "name Hash value 3", &rounded_buf);
+    try std.testing.expect(std.mem.indexOf(u8, rounded, "rounded down to 2MB") != null);
+    try std.testing.expectEqual(@as(usize, 2), s.tt.allocatedMb());
 }
 
 // The perft tests, shallow and deep, live in `perft.zig` beside the driver they
@@ -996,12 +1136,25 @@ test "position replays a game and refuses a move that is not legal" {
     try std.testing.expect(s.b.consistent());
 
     // `e2e4` is well-formed but not legal here, and playing it would move a
-    // piece that is not there. The replay has to stop, not corrupt the board.
+    // piece that is not there.
+    //
+    // **Nothing is applied, not even the prefix.** Otherwise the caller reports
+    // "position unchanged" while the engine sits on a third position neither
+    // side asked for, and the next `go` answers from it.
+    const established = s.b.hash;
     var bad = std.mem.tokenizeAny(u8, "startpos moves e2e4 e2e4", " \t");
     try std.testing.expect(!setPosition(s, &bad));
-    try std.testing.expectEqual(@as(usize, 2), s.root_history_len);
+    try std.testing.expectEqual(@as(usize, 4), s.root_history_len);
+    try std.testing.expectEqual(established, s.b.hash);
     try std.testing.expect(s.b.consistent());
     try std.testing.expectEqual(s.b.hash, s.b.computeHash());
+
+    // Rejection at the end of a long line, not just at its second move: the
+    // prefix is the part at risk.
+    var late = std.mem.tokenizeAny(u8, "startpos moves e2e4 e7e5 b8c6 d2d4 zzzz", " \t");
+    try std.testing.expect(!setPosition(s, &late));
+    try std.testing.expectEqual(established, s.b.hash);
+    try std.testing.expectEqual(@as(usize, 4), s.root_history_len);
 
     // A FEN position, and a move played from it.
     var fen = std.mem.tokenizeAny(u8, "fen 6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1 moves a1a8", " \t");
@@ -1009,6 +1162,47 @@ test "position replays a game and refuses a move that is not legal" {
     try std.testing.expect(s.b.consistent());
     try std.testing.expectEqual(board.Color.black, s.b.side);
     try std.testing.expectEqual(board.Piece.w_rook, s.b.pieceAt(.a8));
+}
+
+test "a finished search is reaped without arming the cancel flag" {
+    // **No unit test in this file could see this one**; only a played game
+    // could. Driven through the real state machine rather than by setting the
+    // flag by hand, because the bug was entirely in which predicate decides a
+    // search is still live.
+    attacks.init();
+    const s = try std.testing.allocator.create(search.Searcher);
+    defer std.testing.allocator.destroy(s);
+    var table: tt.Table = .off;
+    s.init(std.testing.io, &table);
+
+    var buf: [4096]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var e: Engine = .{ .io = std.testing.io, .searcher = s, .out = &w };
+
+    // A real, short search on a real thread, then let it finish on its own.
+    var go = std.mem.tokenizeAny(u8, "depth 1", " \t");
+    try startSearch(&e, &go);
+    if (e.thread) |t| t.join();
+    e.thread = null;
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "bestmove") != null);
+
+    // Re-arm the handle the way a completed-but-unreaped search leaves it, then
+    // let a `position` cancel through it. Nothing was live, so nothing is armed.
+    var go2 = std.mem.tokenizeAny(u8, "depth 1", " \t");
+    try startSearch(&e, &go2);
+    while (e.searching.load(.acquire)) {}
+    e.cancelSearch();
+    try std.testing.expect(!e.cancelled);
+    try std.testing.expectEqual(@as(?std.Thread, null), e.thread);
+
+    // And the next search still answers, which is the property that broke.
+    w = .fixed(&buf);
+    e.out = &w;
+    var go3 = std.mem.tokenizeAny(u8, "depth 1", " \t");
+    try startSearch(&e, &go3);
+    if (e.thread) |t| t.join();
+    e.thread = null;
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "bestmove") != null);
 }
 
 test "a rejected position leaves the board alone and says so" {

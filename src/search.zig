@@ -180,7 +180,20 @@ pub const Clock = struct {
         // budget of zero would return before even the first iteration finished,
         // leaving only the unsearched seed move to play.
         const soft = @max(1, @min(usable / moves +| c.increment_ms, ceiling));
-        const hard = @max(soft, @min(usable / std.math.sqrt(moves) +| c.increment_ms, ceiling));
+
+        // **Real-valued root: `std.math.sqrt` on an integer is a *floor* root**,
+        // which collapses `movestogo` 2 and 3 onto the same divisor as 1 and
+        // hands three moves' time to one. Float is safe here and only here —
+        // `bench` is depth-limited and never builds a budget, so the
+        // determinism invariant is out of reach, and the clamp precedes the
+        // conversion back so a `wtime` near `maxInt(u64)` cannot make
+        // `@intFromFloat` undefined.
+        const root = @sqrt(@as(f64, @floatFromInt(moves)));
+        const by_root: u64 = @intFromFloat(@min(
+            @as(f64, @floatFromInt(usable)) / root,
+            @as(f64, @floatFromInt(ceiling)),
+        ));
+        const hard = @max(soft, @min(by_root +| c.increment_ms, ceiling));
 
         return .{ .soft_ms = soft, .hard_ms = hard };
     }
@@ -277,6 +290,15 @@ pub const Searcher = struct {
 
     nodes: u64,
     limits: Limits,
+    /// The node count at which `pollLimits` runs next: `check_interval` nodes
+    /// on, or the node limit itself if that lands sooner.
+    ///
+    /// **Not a `nodes & (check_interval - 1)` mask.** A mask first fires at
+    /// 2048, so it cannot see a limit below the interval at all, and it fires
+    /// twice at a leaf — `negamax` polls, then hands the same node count to
+    /// `quiesce`, which polls again. A point only `pollLimits` moves costs the
+    /// same load and compare and has neither fault.
+    next_check: u64,
     start: Io.Timestamp,
     io: Io,
 
@@ -305,9 +327,18 @@ pub const Searcher = struct {
         s.stopped = false;
         s.nodes = 0;
         s.limits = .{};
+        s.next_check = check_interval;
         s.setDeadlines(s.limits);
         s.root_best = null;
         s.start = Io.Clock.awake.now(io);
+        // **Here as well as in `search()`, or a `Searcher` has two ready
+        // states.** `negamax` reads both on its first node, so anything
+        // entering it without going through `search()` orders moves off
+        // whatever was last in this heap. The `= .{}` prohibition above is
+        // about `pv`, which nothing reads before the search writes it; these
+        // two are read first, so the memset buys the invariant.
+        s.killers = @splat(no_killers);
+        s.quiet_history = no_history;
         s.setPosition(Board.startpos);
     }
 
@@ -360,9 +391,10 @@ pub const Searcher = struct {
         return false;
     }
 
-    /// Draw by repetition or by the fifty-move rule.
-    fn drawnByRule(s: *Searcher) bool {
-        if (s.repeated()) return true;
+    /// Draw by the fifty-move rule. Split out from `drawnByRule` because
+    /// quiescence needs this half and cannot have the other: repetition is a
+    /// fact about the search path, and quiescence does not maintain one.
+    fn fiftyMoveDraw(s: *const Searcher) bool {
         if (s.b.halfmove < 100) return false;
 
         // Mate delivered on the hundredth halfmove is mate, not a draw. Asking
@@ -374,7 +406,13 @@ pub const Searcher = struct {
         return list.len != 0;
     }
 
+    /// Draw by repetition or by the fifty-move rule.
+    fn drawnByRule(s: *Searcher) bool {
+        return s.repeated() or s.fiftyMoveDraw();
+    }
+
     fn pollLimits(s: *Searcher) void {
+        s.next_check = @min(s.nodes +| check_interval, s.limits.nodes);
         if (s.stop_flag.load(.monotonic) or s.nodes >= s.limits.nodes) {
             s.stopped = true;
             return;
@@ -445,10 +483,13 @@ pub const Searcher = struct {
         // published one: Schaeffer halves per move played and keeps the table
         // for a whole game, which would carry state between `bench` positions.
         // Gravity is what makes clearing affordable — nothing relies on age.
-        s.quiet_history = @splat(@splat(@splat(0)));
+        s.quiet_history = no_history;
         // Private to this thread, unlike `stop_flag`, so resetting it here is
         // safe and keeps a previous search's abort from poisoning this one.
         s.stopped = false;
+        // Rearmed against *this* search's limits: `next_check` is a node count,
+        // and `nodes` has just gone back to zero.
+        s.next_check = @min(check_interval, s.limits.nodes);
         s.start = Io.Clock.awake.now(s.io);
         s.history_len = s.root_history_len;
         s.tt.newSearch();
@@ -514,7 +555,7 @@ pub const Searcher = struct {
         s.pv_len[ply] = 0;
         s.nodes += 1;
 
-        if (s.nodes & (check_interval - 1) == 0) s.pollLimits();
+        if (s.nodes >= s.next_check) s.pollLimits();
         if (s.stopped) return 0;
 
         // Never at the root: whatever the history says, the game is not over
@@ -545,10 +586,31 @@ pub const Searcher = struct {
             // variation, not just a number.
             if (ply > 0 and entry.depth >= depth) {
                 const score = scoreFromTt(entry.score, ply);
+                // **The cutoff still owes its parent a line.** Returning with
+                // `pv_len[ply]` at the 0 set above makes the parent copy an
+                // empty child, and a one-move PV reaches the root. The table's
+                // move is legal by construction — `Entry.key` is the full 64
+                // bits — so naming it is a true line, not a guess.
+                //
+                // Reporting only. A bound is not a variation, so the line stays
+                // short; not taking these cutoffs at PV nodes is the real fix
+                // and moves the tree. Parked in ROADMAP.md.
                 switch (entry.meta.bound) {
-                    .exact => return score,
-                    .lower => if (score >= beta) return score,
-                    .upper => if (score <= alpha) return score,
+                    .exact => {
+                        s.pv[ply][0] = entry.move;
+                        s.pv_len[ply] = 1;
+                        return score;
+                    },
+                    .lower => if (score >= beta) {
+                        s.pv[ply][0] = entry.move;
+                        s.pv_len[ply] = 1;
+                        return score;
+                    },
+                    .upper => if (score <= alpha) {
+                        s.pv[ply][0] = entry.move;
+                        s.pv_len[ply] = 1;
+                        return score;
+                    },
                     .none => unreachable, // `probe` does not return empty entries
                 }
             }
@@ -600,6 +662,13 @@ pub const Searcher = struct {
                     alpha = score;
                     s.updatePv(ply, m);
                 }
+                // origin: fail-soft alpha-beta, as against fail-hard — John
+                //         Philip Fishburn, "Another optimization of alpha-beta
+                //         search", SIGART Bulletin 84, 1983, which CPW credits
+                //         with introducing it as an improvement on fail-hard
+                //         costing no extra work
+                //         via https://www.chessprogramming.org/Fail-Soft
+                //
                 // Fail-soft: the caller is told the best score actually seen,
                 // not merely that the window was exceeded, which is what makes
                 // the bound stored below a true statement about the position
@@ -640,7 +709,7 @@ pub const Searcher = struct {
     /// move that cuts off twice at the same ply fills both with itself, and the
     /// second slot stops being a second guess.
     fn storeKiller(s: *Searcher, ply: u32, m: Move) void {
-        if (m.kind.isCapture() or m.kind.isPromotion()) return;
+        if (m.kind.isNoisy()) return;
         const k = &s.killers[ply];
         if (@as(u16, @bitCast(m)) == @as(u16, @bitCast(k[0]))) return;
         k[1] = k[0];
@@ -656,12 +725,12 @@ pub const Searcher = struct {
     /// so an entry written for one is never read. Ranking captures by their own
     /// history needs the captured type too, and is a separate technique.
     fn updateQuietHistory(s: *Searcher, cutoff: Move, tried: []const Move, depth: i32) void {
-        if (cutoff.kind.isCapture() or cutoff.kind.isPromotion()) return;
+        if (cutoff.kind.isNoisy()) return;
 
         const bonus = @min(history_slope * depth, history_bonus_max);
         s.bumpQuietHistory(cutoff, bonus);
         for (tried) |m| {
-            if (m.kind.isCapture() or m.kind.isPromotion()) continue;
+            if (m.kind.isNoisy()) continue;
             s.bumpQuietHistory(m, -bonus);
         }
     }
@@ -692,6 +761,7 @@ pub const Searcher = struct {
     //
     // origin: quiescence search — unclear (folklore; CPW names no originator,
     //         earliest use it records is Larry Harris, IJCAI 1975)
+    //         via https://www.chessprogramming.org/Quiescence_Search
     // origin: stand-pat and its prohibition in check — unclear (folklore)
     //         via https://www.chessprogramming.org/Quiescence_Search
     // origin: not searching the losing captures here — unclear (folklore; CPW
@@ -704,10 +774,20 @@ pub const Searcher = struct {
         // which `bench`, `nps` and `go nodes` are all read off.
         s.pv_len[ply] = 0;
 
-        if (s.nodes & (check_interval - 1) == 0) s.pollLimits();
+        if (s.nodes >= s.next_check) s.pollLimits();
         if (s.stopped) return 0;
 
         if (ply >= max_ply) return eval.evaluate(&s.b);
+
+        // **The fifty-move rule reaches in here.** `generateNoisy` falls back
+        // to every legal move in check, so quiescence does search quiets, and
+        // one quiet evasion at `halfmove` 99 crosses 100 — scored on material
+        // instead of as a draw, and then stored by the parent.
+        //
+        // Repetition deliberately is not checked: it needs the key pushed at
+        // every quiescence descent, a store on the most-visited node type, to
+        // win only perpetual-check lines a check extension reaches first.
+        if (s.fiftyMoveDraw()) return 0;
 
         // Not `undefined` out of habit: `= .{}` here would `memset` 2.3KB at
         // what is about to become the most-visited node type in the engine.
@@ -958,7 +1038,7 @@ comptime {
 /// cannot match or a table read that does not apply to it.
 fn scoreMove(b: *const Board, m: Move, killers: [2]Move, hist: *const QuietHistory) Score {
     const kind = m.kind;
-    if (!kind.isCapture() and !kind.isPromotion()) {
+    if (!kind.isNoisy()) {
         // Promotions are excluded by falling outside this branch rather than by
         // a test of their own: a queen promotion already sits with the queen
         // captures, which is above where a killer would put it.
@@ -1100,6 +1180,16 @@ fn testDepth(comptime gate: u8, comptime deep: u8) u8 {
 /// that matter run against a table small enough to collide on nearly every node.
 var no_table: tt.Table = .off;
 
+/// The positions this file measures against, named once: spelled out at each
+/// call site, a one-character typo still parses as a legal FEN, and the node
+/// bounds below silently stop bounding what they were measured against.
+const kiwipete = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+/// Ra1a8#, the back-rank mate.
+const mate_in_1 = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1";
+/// A two-rook ladder: neither rook mates this move, so the score has to carry a
+/// distance rather than merely clear the mate threshold.
+const mate_in_2 = "7k/8/8/8/8/8/R7/1R5K w - - 0 1";
+
 fn searcher(fen: ?[]const u8) !*Searcher {
     return searcherWith(fen, &no_table);
 }
@@ -1127,6 +1217,12 @@ fn searcherWith(fen: ?[]const u8, table: *tt.Table) !*Searcher {
 ///
 /// **Only the test below may use this.** Hanging it off `referenceMinimax`'s
 /// leaves multiplies two unpruned searches and the gate stops finishing.
+///
+/// **Independent of `quiesce`, but not of `see`**: the filter below calls the
+/// same `see.winning`, so a wrong verdict prunes both sides alike and this
+/// passes. Deliberate — omitting it would assert the *previous* rule — but it
+/// means SEE's arithmetic is guarded by see.zig's `comptime` ordering
+/// assertion, not by this.
 fn referenceQuiesce(s: *Searcher, ply: u32) Score {
     if (ply >= max_ply) return eval.evaluate(&s.b);
 
@@ -1198,7 +1294,7 @@ test "alpha-beta returns exactly the score minimax does" {
     const cases = .{
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", testDepth(3, 4) },
         // Kiwipete: castling, pins and a dense capture set.
-        .{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", testDepth(2, 3) },
+        .{ kiwipete, testDepth(2, 3) },
         // Promotions and an en passant, where scores swing by a queen.
         .{ "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", testDepth(2, 4) },
         // In check at the root: six legal replies, three kinds of escape.
@@ -1244,7 +1340,7 @@ const quiescent_sparse = [_][]const u8{
 /// stand-pat floor and termination can, and those are what break here.
 const quiescent_dense = [_][]const u8{
     // Kiwipete: eight captures at the root and exchanges several plies deep.
-    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    kiwipete,
     // Both queens loose — the shape that blows an unordered quiescence up.
     "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
 };
@@ -1323,7 +1419,7 @@ test "a narrow window never changes which side of it the true score falls on" {
     // promises a *bound*. That bound is what a transposition table will store,
     // so it is worth pinning now: a search returning <= alpha must not be hiding
     // a score above it, and one returning >= beta must not be hiding one below.
-    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     const depth = testDepth(2, 3);
@@ -1350,7 +1446,7 @@ test "every move of the principal variation is legal" {
     // the same check where a collision can actually happen.
     const fens = [_][]const u8{
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        kiwipete,
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
     };
@@ -1421,21 +1517,38 @@ test "the same mate is seen from the other side of the board" {
     try testing.expectEqualStrings("a8a1", w.buffered());
 }
 
-test "being mated is scored as a loss, and a slower loss is preferred" {
-    // Two positions one tempo apart. Mate arriving later must score higher for
-    // the losing side — that is the whole point of folding ply into the score,
-    // and the sign is easy to get backwards.
-    const sooner = try searcher("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1");
+test "a mate is scored by its distance, and a nearer one scores higher" {
+    // **The two positions must mate at genuinely different distances**, or the
+    // comparison below is a value against itself and an inverted ply fold
+    // passes it.
+    const sooner = try searcher(mate_in_1);
     defer testing.allocator.destroy(sooner);
     const fast = sooner.search(.{ .depth = 4 }, null).score;
 
-    const later = try searcher("6k1/5ppp/8/8/8/7P/5PP1/R5K1 w - - 0 1");
+    const later = try searcher(mate_in_2);
     defer testing.allocator.destroy(later);
     const slow = later.search(.{ .depth = 4 }, null).score;
 
-    // Both are winning for White; the one that mates in fewer plies scores more.
+    // Both are winning for White, and the closer mate is worth strictly more.
     try testing.expect(fast >= mate_threshold);
-    try testing.expect(fast >= slow);
+    try testing.expect(slow >= mate_threshold);
+    try testing.expectEqual(@as(?i32, 1), mateDistance(fast));
+    try testing.expectEqual(@as(?i32, 2), mateDistance(slow));
+    try testing.expect(fast > slow);
+}
+
+test "being mated is scored as a loss, from the mated side" {
+    // The sign half, which the distance test above cannot reach: a fold of the
+    // wrong sign leaves every mate score positive for both players.
+    const mated = try searcher("R5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1");
+    defer testing.allocator.destroy(mated);
+    const s = mated.search(.{ .depth = 4 }, null);
+    try testing.expectEqual(@as(?Move, null), s.move);
+
+    // And one ply further out: the side to move is lost, not winning.
+    const losing = try searcher("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1");
+    defer testing.allocator.destroy(losing);
+    try testing.expect(losing.search(.{ .depth = 5 }, null).score < mate_threshold);
 }
 
 test "stalemate is a draw and checkmate at the root has no move" {
@@ -1520,7 +1633,7 @@ test "the fifty-move rule is a draw, but not when it is mate" {
 test "the board is restored exactly by a search" {
     // The same contract perft holds itself to. A leaked undo shows up as a
     // wrong evaluation long before it shows up as a crash.
-    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     const before = s.b;
@@ -1537,7 +1650,7 @@ test "the board is restored exactly by a search" {
 test "a search is deterministic" {
     // `bench` is only meaningful if the same position at the same depth costs
     // the same nodes every time. Nothing here may consult a clock or a random.
-    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     const first = s.search(.{ .depth = testDepth(3, 4) }, null);
@@ -1549,7 +1662,7 @@ test "a search is deterministic" {
 }
 
 test "the node limit is respected" {
-    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     const limit = 20_000;
@@ -1560,6 +1673,71 @@ test "the node limit is respected" {
     try testing.expect(result.nodes >= limit);
     try testing.expect(result.nodes < limit + 2 * check_interval);
     try testing.expect(result.move != null);
+}
+
+test "a node limit below the check interval is still honoured" {
+    // **The case the test above cannot see**: its limit is ten times
+    // `check_interval`, so it passes even on a poll that never consults a limit
+    // below the interval at all.
+    for ([_]u64{ 1, 100, check_interval - 1 }) |limit| {
+        const s = try searcher(kiwipete);
+        defer testing.allocator.destroy(s);
+
+        const result = s.search(.{ .depth = max_ply, .nodes = limit }, null);
+        // One node of overshoot: the limit is tested after the increment.
+        try testing.expect(result.nodes <= limit + 1);
+        // And it still answers with a move, which is the whole obligation.
+        try testing.expect(result.move != null);
+    }
+}
+
+test "a principal variation is longer than the move at its head" {
+    // **Mutation-checked**: replacing `updatePv`'s tail copy with a bare
+    // `pv_len[ply] = 1` left the whole gate green, because `pv.len > 0` and
+    // `pv_len[0] <= depth` both hold for a line truncated to its head.
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+
+    const depth = testDepth(4, 6);
+    const result = s.search(.{ .depth = depth }, null);
+    const pv = s.pv[0][0..s.pv_len[0]];
+
+    try testing.expectEqual(result.move.?, pv[0]);
+    // Not `== depth`: a line may end early on a mate or a table cutoff. Two is
+    // what distinguishes a variation from a move.
+    try testing.expect(pv.len >= 2);
+    try testing.expect(pv.len <= depth);
+}
+
+test "a warm table does not collapse the principal variation" {
+    // A bound cutoff returns before `updatePv`, so a parent copying a
+    // zero-length child reports a one-move line. Only a warm table reaches it.
+    var table = try realTable();
+    defer table.deinit(testing.allocator);
+
+    const s = try searcherWith(kiwipete, &table);
+    defer testing.allocator.destroy(s);
+
+    // Deep first, so the shallow search below runs entirely into a warm table.
+    _ = s.search(.{ .depth = testDepth(6, 8) }, null);
+
+    const shallow = s.search(.{ .depth = 3 }, null);
+    try testing.expect(s.pv_len[0] >= 2);
+    try testing.expectEqual(shallow.move.?, s.pv[0][0]);
+}
+
+test "the fifty-move rule reaches into quiescence" {
+    // White is a rook down and in check at the ceiling, so every reply is a
+    // quiet evasion and quiescence is where the hundredth halfmove lands.
+    const drawn = try searcher("7k/8/8/8/8/8/r6K/8 w - - 99 80");
+    defer testing.allocator.destroy(drawn);
+    try testing.expectEqual(@as(Score, 0), drawn.quiesce(0, -infinity, infinity));
+
+    // One halfmove earlier is no draw, and is judged on the material it is
+    // down — which stops this passing merely because quiescence returns 0.
+    const live = try searcher("7k/8/8/8/8/8/r6K/8 w - - 97 80");
+    defer testing.allocator.destroy(live);
+    try testing.expect(live.quiesce(0, -infinity, infinity) < 0);
 }
 
 test "a stop request is honoured and still answers with a legal move" {
@@ -1694,13 +1872,12 @@ test "iterative deepening reaches the depth it is asked for" {
 test "searching the previous best move first does not change the score" {
     // Root ordering is the one thing iterative deepening buys, and reordering a
     // move list is not allowed to change what the search concludes.
-    const fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 
-    const deepened = try searcher(fen);
+    const deepened = try searcher(kiwipete);
     defer testing.allocator.destroy(deepened);
     const with_ordering = deepened.search(.{ .depth = testDepth(2, 4) }, null).score;
 
-    const cold = try searcher(fen);
+    const cold = try searcher(kiwipete);
     defer testing.allocator.destroy(cold);
     cold.root_best = null;
     const without_ordering = cold.negamax(testDepth(2, 4), 0, -infinity, infinity);
@@ -1713,7 +1890,7 @@ test "ordering hands every move back exactly once, best first" {
     // that drops or duplicates a move surfaces only as a wrong search.
     const fens = [_][]const u8{
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        kiwipete,
         "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
     };
@@ -1836,8 +2013,7 @@ test "a capturing promotion collects both terms" {
 }
 
 test "the ordering move goes first, and one that is not in the list changes nothing" {
-    const fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
-    const s = try searcher(fen);
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     // A quiet rook shuffle: it scores zero on its own and would otherwise sort
@@ -1866,8 +2042,6 @@ test "the ordering move goes first, and one that is not in the list changes noth
     }
 }
 
-const kiwipete = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
-
 test "a killer outranks every other quiet, and still ranks behind the captures" {
     const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
@@ -1888,7 +2062,7 @@ test "a killer outranks every other quiet, and still ranks behind the captures" 
     // ...and every quiet that is not the killer is still an unranked zero.
     for (o.list.slice(), 0..) |m, i| {
         if (@as(u16, @bitCast(m)) == @as(u16, @bitCast(killer))) continue;
-        if (m.kind.isCapture() or m.kind.isPromotion()) continue;
+        if (m.kind.isNoisy()) continue;
         try testing.expectEqual(@as(Score, 0), o.scores[i]);
     }
 }
@@ -1987,17 +2161,15 @@ test "killers are reached by a real search, and it costs fewer nodes for them" {
     // the same way as the test above: only a search that got worse can breach
     // it.
     //
-    // **Recalibrated when PSQT landed, because the old bound measured a
-    // different engine.** A node count is only comparable against the eval that
-    // produced the tree, so 3,438,106 — the material-only ablation — became
-    // meaningless the moment the leaves started returning different numbers.
-    // Re-measured here: 3,849,447 ablated against 3,799,071 live, a margin of
-    // 1.31% where the material-only eval managed 0.25%. That five-fold jump is
-    // the answer to the question docs/testlog.md, 2026-08-16 parked — killers
-    // were never the problem, the eval they ordered against was.
+    // **Recalibrate this whenever the tree changes.** A node count only bounds
+    // the engine that produced it: twice now this bound has outlived its
+    // measurement, and the second time it sat *above* the ablated figure, so the
+    // killer band could be deleted with the suite green. Current measurement is
+    // 3,791,023 ablated against 3,789,513 live — 0.04%, history having absorbed
+    // most of what killers bought here (docs/testlog.md, 2026-08-16).
     const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
-    try testing.expect(s.search(.{ .depth = 7 }, null).nodes < 3_849_447);
+    try testing.expect(s.search(.{ .depth = 7 }, null).nodes < 3_791_023);
 }
 
 // --- history heuristic --------------------------------------------------------
@@ -2171,7 +2343,7 @@ test "ordering is applied, and the search costs fewer nodes for it" {
     // The bound is what this position cost at this depth on `main` at the commit
     // before ordering existed, which makes it one-sided: a search that gets
     // better only ever moves further under it, so it never needs raising.
-    const s = try searcher("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
     try testing.expect(s.search(.{ .depth = 3 }, null).nodes < 1_300_546);
 }
@@ -2197,7 +2369,7 @@ test "a table small enough to collide on every node still produces a legal PV" {
     // wrong, or if the stored move is trusted without it, this fires.
     const fens = [_][]const u8{
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        kiwipete,
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
     };
@@ -2262,7 +2434,7 @@ test "the table is used, and searching with one costs fewer nodes" {
     // seconds of capture tree that had no bearing on it.
     const fen = "8/8/8/3k4/8/8/3KP3/8 w - - 0 1";
 
-    const without = try searcher(fen);
+    const without = try searcher(kiwipete);
     defer testing.allocator.destroy(without);
     const cold = without.search(.{ .depth = 6 }, null);
 
@@ -2380,7 +2552,7 @@ test "a search with the table is deterministic from a cleared one" {
     defer table.deinit(testing.allocator);
 
     const s = try searcherWith(
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        kiwipete,
         &table,
     );
     defer testing.allocator.destroy(s);

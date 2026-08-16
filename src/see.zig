@@ -54,6 +54,21 @@ pub const piece_value: [6]Score = .{
     king_value,
 };
 
+comptime {
+    // The least-valuable-attacker loop in `value` walks `by_type` in `PieceType`
+    // order and takes the first non-empty bitboard, so it finds the *cheapest*
+    // attacker only while this array is non-decreasing in that order. Retuning
+    // is invited above; transposing two entries redirects every SEE verdict in
+    // the engine, and no test can catch that, because each expectation in this
+    // file is written in terms of these same constants.
+    var i: usize = 1;
+    while (i <= @intFromEnum(PieceType.king)) : (i += 1) {
+        if (piece_value[i] < piece_value[i - 1]) {
+            @compileError("see.piece_value must be non-decreasing in PieceType order");
+        }
+    }
+}
+
 /// A sentinel, not a value: the king is never captured. It only has to beat a
 /// queen, and the king guard in `value` is what holds that bound — see there.
 const king_value: Score = 10_000;
@@ -130,6 +145,12 @@ pub fn value(b: *const Board, m: Move) Score {
             attackers & b.by_color[@intFromEnum(side.flip())] != 0) break;
 
         d += 1;
+        // `occ` starts at no more than 31 bits — the occupancy less the moving
+        // piece, less the victim pawn again for en passant — and each iteration
+        // clears exactly one, so `d` stops at 30. Two slots of margin, and both
+        // changes contemplated below (pricing promotions inside the swap-off,
+        // keeping the initiator in `occ`) spend some of it.
+        assert(d < gain.len);
         gain[d] = exposed - gain[d - 1];
         exposed = piece_value[t];
 

@@ -140,6 +140,12 @@ pub const Table = struct {
     /// Callers must free with the same allocator they pass here.
     pub fn resize(t: *Table, allocator: std.mem.Allocator, megabytes: usize) !void {
         const fresh: Table = try .init(allocator, megabytes);
+        // `init` answers a sub-entry request with a successful `.off`, right for
+        // a table asked to be absent and wrong for one that already exists:
+        // without this, the lines below free a live table, install the empty one
+        // and report success. `applyOption` clamps to `min_hash_mb` and never
+        // asks — but this is public API and the clamp is not part of it.
+        if (fresh.entries.len == 0 and t.entries.len != 0) return error.OutOfMemory;
         t.deinit(allocator);
         t.* = fresh;
     }
@@ -225,12 +231,17 @@ pub const Table = struct {
     /// first thousand entries rather than counting them all: this is only ever
     /// asked between iterations, but walking 16MB to answer it would still be
     /// paid out of the search's cache.
+    /// Physical occupancy, **not the current generation's share of it**:
+    /// `newSearch` bumps the generation without clearing the table, so a
+    /// generation-scoped count reads ~0 on the first `info` line of every `go`
+    /// and hides a saturated table — the fault `Info.hashfull` exists to expose.
+    /// UCI defines it as "the hash is x permill full".
     pub fn hashfull(t: *const Table) u32 {
         const sample = @min(t.entries.len, 1000);
         if (sample == 0) return 0;
         var used: u32 = 0;
         for (t.entries[0..sample]) |entry| {
-            if (entry.meta.bound != .none and entry.meta.generation == t.generation) used += 1;
+            if (entry.meta.bound != .none) used += 1;
         }
         return @intCast(used * 1000 / sample);
     }
@@ -298,6 +309,19 @@ test "resize gives a table of the new size, empty, and keeps the old one on fail
     try testing.expectError(error.OutOfMemory, t.resize(testing.failing_allocator, 1));
     try testing.expectEqual(before.ptr, t.entries.ptr);
     try testing.expectEqual(before.len, t.entries.len);
+
+    // A size that rounds to no entries is the same promise: unguarded, `resize`
+    // frees the live table, installs an empty one and reports success.
+    const kept = t.entries;
+    try testing.expectError(error.OutOfMemory, t.resize(testing.allocator, 0));
+    try testing.expectEqual(kept.ptr, t.entries.ptr);
+    try testing.expectEqual(kept.len, t.entries.len);
+
+    // Asking a table that is already off for nothing is not a loss, so it is
+    // allowed: there is no live allocation to protect.
+    var absent: Table = .off;
+    try absent.resize(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), absent.entries.len);
 }
 
 test "a fresh table is empty everywhere" {
@@ -444,8 +468,9 @@ test "hashfull counts this search's entries in permill" {
     for (0..250) |i| t.store(@intCast(i), some_move, 0, 1, .exact);
     try testing.expectEqual(@as(u32, 250), t.hashfull());
 
-    // Entries left by an earlier search do not count as full — replacement will
-    // take any of them.
+    // A new search does not empty the table, so it does not empty this number.
+    // Replacement will still take any of these entries — that is a fact about
+    // replacement, not about how full the table is.
     t.newSearch();
-    try testing.expectEqual(@as(u32, 0), t.hashfull());
+    try testing.expectEqual(@as(u32, 250), t.hashfull());
 }

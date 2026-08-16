@@ -238,6 +238,15 @@ Two rules:
 > https://minuskelvin.net/chesswiki/content/packed-eval.html — CPW's Score page is **not** the
 > source for this and does not describe it, recorded so the next reader does not go looking there
 
+> **fail-soft alpha-beta** — origin: *John Philip Fishburn, "Another optimization of alpha-beta
+> search", SIGART Bulletin 84, 1983, which CPW credits with introducing fail-soft as an improvement
+> on fail-hard costing no extra work* via https://www.chessprogramming.org/Fail-Soft — trail: *koji
+> returns the best score actually seen rather than a clamped window bound, which is what makes the
+> bound it stores in the transposition table a statement about the position rather than about the
+> window the node happened to be searched under. Recorded late: the choice was named and defended
+> in four comments across `search.zig` from the first search commit, and had neither an `origin:`
+> line at its site nor an entry here until the Phase 2 boundary review*
+
 > **quiescence search** — origin: *unclear (folklore of the 1970s programs; CPW names no
 > originator). The earliest published use of "quiescence" in this sense CPW records is Larry
 > Harris, IJCAI 1975; the formal treatment is D. F. Beal, "A Generalised Quiescence Search
