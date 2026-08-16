@@ -292,6 +292,33 @@ Two rules:
 > via https://www.chessprogramming.org/Killer_Heuristic — trail: *ubiquitous in alpha-beta engines
 > by the 1980s; no first shipping engine is identifiable*
 
+> **the history heuristic** — origin: *Jonathan Schaeffer, "The History Heuristic", ICCA Journal
+> 6(3):16-19, 1983*, via https://www.chessprogramming.org/History_Heuristic — the butterfly
+> `[side][from][to]` indexing koji uses is his. **The increment is not his, and which increment is
+> his could not be established.** Secondary literature attributes both `2^depth` (*Winands, van der
+> Werf, van den Herik, Uiterwijk, "The Relative History Heuristic", Computers and Games 2004, LNCS
+> 3846*, citing Schaeffer and calling it "the standard increment",
+> https://dke.maastrichtuniversity.nl/m.winands/documents/relhis.pdf) and `depth*depth` (CPW's own
+> worked pseudocode) to the same 1983 paper, and the ICCA originals are paywalled, so no
+> description settles it. Recorded as unresolved rather than guessed.
+
+> **the gravity history update** (`h += bonus - h*|bonus|/max`) — origin: *unclear (folklore; CPW
+> gives the formula in a worked example and names no originator)* via
+> https://www.chessprogramming.org/History_Heuristic — trail: *discussed as a shift away from
+> accumulate-and-age on TalkChess, where the participants are explicit that the constants are
+> unprincipled and exist only because they tested well*
+
+> **penalising the quiet moves searched before the cutoff move** — origin: *unclear*, via
+> https://www.chessprogramming.org/History_Heuristic — the least-documented technique in koji.
+> Reported as standard modern practice and named by practitioners as something they tried and kept,
+> but there is no published derivation, and no source gives it a shape other than the bonus with
+> its sign flipped. Attributed to nobody because nobody has claimed it.
+
+> **keeping captures out of the history table** — origin: *unclear (folklore; several engine authors
+> state the rule directly for their own engines, and CPW's separate Capture History page — a
+> distinct later technique, indexed by moved piece, to-square and captured type — is the
+> documentary form of it)* via https://www.chessprogramming.org/History_Heuristic
+
 > **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
 > as an "enhancement" over a single deadline and names no originator)* via
 > https://www.chessprogramming.org/Time_Management — the companion rule for spending the soft limit,

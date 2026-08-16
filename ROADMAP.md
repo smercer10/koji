@@ -55,7 +55,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
       in quiescence
 - [x] Killer moves
 - [x] PSQT + tapered evaluation
-- [ ] History heuristic
+- [x] History heuristic
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
@@ -175,12 +175,24 @@ commitment to implement it.
   at `elo0=-5 elo1=0`.
 - Losing captures ahead of the quiets rather than behind them. CPW records both placements as
   common; the case for the other one is that a capture stays tactically loaded even when SEE calls
-  it losing, and koji's quiet band is unordered zeros until killers and history land — so "behind
-  the quiets" currently means behind thirty arbitrary moves. Retest once history gives that band
-  an order worth ranking against.
+  it losing, and koji's quiet band was unordered zeros until killers and history landed — so
+  "behind the quiets" used to mean behind thirty arbitrary moves. **Unblocked:** history landed
+  2026-08-16 and that band now has an order worth ranking against.
 - Ablate SEE's ordering split against its quiescence pruning. They shipped under one SPRT, stopped
   inconclusive at +1.94 +/- 4.88 (testlog, 2026-08-15); a 1.56x time-to-depth win returning ~2 Elo
   says one half is giving back most of what the other earns, and nodes cannot say which.
+- Index quiet history `[piece][to]` instead of `[side][from][to]`. 768 entries against 8192, so it
+  warms faster and holds a tenth of the cache, and it is what most engines index quiet history by
+  now — against one new `pieceAt(m.from)` on every quiet of every node, in a branch that currently
+  reads no board memory at all. Neither form has been measured here; the classic one shipped
+  because it matches the attribution. Node counts move, so this is an SPRT.
+- History bonus without the malus half. They shipped under one SPRT because that is how the
+  technique is published, but the malus is the least-documented part of it — practitioner reports,
+  no published derivation — and it is the half most likely to be doing nothing.
+- The classic history ageing cadence: keep the table across a game and halve it per move played,
+  rather than clearing it per search. Blocked on a decision, not on code — the classic scheme
+  carries state between `bench` positions, which is what the killers reset exists to refuse, so
+  taking it would mean changing what `bench` means.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
