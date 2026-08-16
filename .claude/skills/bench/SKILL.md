@@ -77,3 +77,8 @@ time-to-depth, an ablation a later change must beat — is what earns one.
 
 If a change alters the bench **node count**, it is not a speed change — it changed the search, and
 it needs an SPRT.
+
+**Put `Bench: <nodes>` as the last line of the PR description**, not only in the branch commit. The
+squash body is the PR description, so a trailer that lives only in a commit is dropped at merge —
+and the CI gate then fails on `main`, where the fix costs a force-push through branch protection.
+

@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           if git show --name-only --format= HEAD | grep -qE '^src/(search|eval)\.zig$'; then
             if ! git log -1 --format=%B HEAD | grep -qE '^Bench: [0-9]+$'; then
-              echo "::error::HEAD touches src/search.zig or src/eval.zig but carries no 'Bench: <nodes>' line."
+              echo "::error::HEAD touches src/search.zig or src/eval.zig but carries no 'Bench: <nodes>' line. The squash body is the PR description — put the trailer on its last line."
               exit 1
             fi
             echo "Bench trailer present: $(git log -1 --format=%B HEAD | grep -E '^Bench: [0-9]+$')"
