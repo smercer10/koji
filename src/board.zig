@@ -252,6 +252,22 @@ pub fn egOf(s: PackedScore) i32 {
 /// copy (see the note there) and MVV-LVA ranks by piece-type tier. **Order
 /// captures by these and the ordering inherits positional noise**, which is the
 /// one cost folding has.
+// The section header above says the values here are koji's own, generated rather
+// than transcribed. **That is true of the tables and not of this row**, which is
+// a published set reproduced exactly — and with the two sitting forty lines
+// apart under one heading, the site said the opposite of CREDITS.md. The origin
+// moved out of `eval.zig` with the numbers and was not re-established here.
+//
+// origin: the 1/3/3/5/9 relative scale — Claude Shannon, "Programming a Computer
+//         for Playing Chess", Philosophical Magazine 41, 1950; CPW tabulates his
+//         row as 100/300/300/500/900
+//         via https://www.chessprogramming.org/Point_Value
+// origin: this exact midgame set, 100/320/330/500/900 — Tomasz Michniewski,
+//         1995, from his Simplified Evaluation Function
+//         via https://www.chessprogramming.org/Simplified_Evaluation_Function
+// origin: the endgame row, 115/300/320/540/950 — koji's own; it states only what
+//         every source agrees on, that pawns and rooks gain as the board empties
+//         and minor pieces give a little back
 pub const piece_value_mg: [6]i32 = .{ 100, 320, 330, 500, 900, 0 };
 pub const piece_value_eg: [6]i32 = .{ 115, 300, 320, 540, 950, 0 };
 

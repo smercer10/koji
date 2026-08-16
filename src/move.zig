@@ -71,6 +71,12 @@ pub const Move = packed struct(u16) {
             return @intFromEnum(k) & promotion_bit != 0;
         }
 
+        /// A capture or a promotion — the moves killers and history both refuse,
+        /// stated once so the two cannot come to disagree about what a quiet is.
+        pub fn isNoisy(k: Kind) bool {
+            return k.isCapture() or k.isPromotion();
+        }
+
         /// The piece a promotion promotes to. Asserts `isPromotion`.
         pub fn promoted(k: Kind) PieceType {
             assert(k.isPromotion());
@@ -90,6 +96,15 @@ pub const Move = packed struct(u16) {
 
     pub fn init(from: Square, to: Square, kind: Kind) Move {
         return .{ .from = from, .to = to, .kind = kind };
+    }
+
+    /// Whole-move equality. The `@bitCast` pair is the cheap way to compare all
+    /// three fields at once, and it is spelled here rather than at each caller
+    /// because the width is this type's business: written out at the call site
+    /// it hard-codes "a Move is exactly 16 bits" everywhere it appears, and
+    /// widening the encoding then breaks every one of them instead of this.
+    pub fn eql(a: Move, b: Move) bool {
+        return @as(u16, @bitCast(a)) == @as(u16, @bitCast(b));
     }
 
     /// UCI long algebraic, `{f}`-printable: `e2e4`, `a7a8q`. Castling is spelled

@@ -608,3 +608,108 @@ implementation site — restating them here is how this file stops being worth r
             were picked, not tuned, and no variant was tried — the sources are
             explicit that nobody can justify a particular set. Nothing here says
             these are good values, only that they beat having none.
+
+### 2026-08-16 — Phase 2 boundary review: the killer ablation, re-measured
+- branch:   chore/close-phase2
+- type:     ablation, and three measurement traps
+- bench:    2679414 (unchanged, and identical on `-Dcpu=x86_64`)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    **Killers now buy 0.04% of the tree, not 1.31%.** Kiwipete depth 7,
+            table off, killer band cut out of the scorer and nothing else
+            changed:
+
+                              nodes      margin over live
+              killers live  3,789,513                   —
+              ablated       3,791,023               0.04%
+
+            The figure when killers merged was 3,849,447 ablated against
+            3,799,071 live — 1.31%. History landed between the two and has
+            absorbed almost all of it. **This is one position at one depth and
+            not a verdict on the technique**, which passed its own SPRT at
+            +9.61 and was measured over 16 positions; it is recorded because the
+            in-tree bound is measured here, and because it sets the bar for what
+            a future ordering change has to beat on this position.
+
+            **The bound had stopped guarding anything.** At 3,849,447 it sat
+            1.6% *above* the current ablated figure, so `storeKiller` could be
+            deleted from `negamax` and `zig build test` stayed green. It was
+            also strictly dominated: the history test asserts < 3,799,071 on the
+            same position at the same depth, a tighter bound the suite already
+            checks. Now 3,791,023.
+
+            Two more guards were asserting nothing, both found by mutation
+            rather than by reading:
+
+            - **No test required a principal variation longer than one move.**
+              Replacing `updatePv`'s tail copy with `pv_len[ply] = 1` — every
+              reported line truncated to its first move — left the whole gate
+              green. The three PV assertions were `pv.len > 0`, `pv_len[0] == 1`
+              on a mate in one, and `pv_len[0] <= depth`, which is the wrong
+              direction: 1 <= depth always holds. And the PV *was* collapsing:
+              a TT bound cutoff returned before `updatePv`, so with a warm table
+              kiwipete `go depth 3` reported `pv d5e6` and nothing more.
+            - **Both mate-distance tests compared a value with itself.** The two
+              FENs differed only by a white pawn on h2 versus h3, which Ra1a8#
+              does not care about, so both scored `mate 1` and the assertion was
+              `31999 >= 31999`. An inverted ply fold passes that. They now use a
+              genuine mate-in-1 against a mate-in-2.
+
+            **Trap worth keeping: a node-count bound measured against an
+            ablation decays silently.** Every one of these was correct when
+            written and was invalidated by a later change to the tree, with no
+            signal at the moment it stopped meaning anything. Three bounds in
+            this file have now needed recalibration for exactly this reason. A
+            bound is only one-sided with respect to the engine that produced it.
+
+            The nine remaining review findings that move the tree or the clock
+            are ROADMAP candidates, not changes made here — the close is a chore
+            commit and bench had to stay at 2679414 to prove it.
+
+### 2026-08-16 — Phase 2 exit match, and the regression it caught
+- branch:   fix/phase2-review
+- type:     fixed-opponent match (exit criterion), and a green-suite regression
+- opponent: Stockfish 18, `UCI_LimitStrength=true UCI_Elo=1800`, GPL-3.0
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **81.0%** — 100 games, 81-19-0, +251.89 +/- 85.74 Elo
+            (nElo +290.14 +/- 68.10, LOS 100%), Ptnml(0-2) [1, 0, 17, 0, 32]
+- bench:    2679414 (unchanged)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread, 4 concurrency
+- notes:    Stockfish's strength limiter is not calibrated against CCRL, so
+            "1800" is its own scale and this number is **not** a rating estimate
+            for koji. What the criterion establishes is that koji plays complete,
+            legal, clock-respecting games and wins them decisively.
+
+            **The first run of this match scored 0.0% — 400 games, 400 losses,
+            400 timeouts — and every other gate in the project was green.**
+            `zig build test` (161 tests), `zig fmt --check`, `guard_test` 74/74,
+            `bench` bit-identical at 2,679,414 on both the PEXT and
+            `-Dcpu=x86_64` builds, and CI on the PR. The bug was introduced by
+            this very branch, in the fix for a review finding about `ucinewgame`
+            and `position` emitting an unrequested `bestmove`:
+
+                cancelSearch tested `e.thread != null`
+                -> but only a join clears `thread`
+                -> so a search that had finished and already printed still
+                   matched, and the `position` between two moves armed the
+                   suppression flag against it
+                -> which then swallowed the *next* search's bestmove
+                -> engine silent from move two of every game
+
+            Localised in one run by playing `main`'s binary against the same
+            opponent: 8-1-1 with no timeouts, against 0-400 for the branch — ten
+            minutes, after two hours spent re-reading time-management code that
+            was never involved.
+
+            **Trap worth keeping: a UCI state-machine bug is invisible to every
+            gate that does not play a game.** The failure mode is an engine that
+            says nothing, and nothing in a unit suite waits for it to speak.
+            `bench` cannot see it either — it never issues a second `go` against
+            a live thread, which is the state the bug needed. The smoke match
+            this produced is in CLAUDE.md, Workflow.
+
+            The regression test added with the fix drives the real state machine
+            — spawn, let it finish, cancel through it, assert nothing is armed
+            and the next search still answers — rather than setting the flag by
+            hand, since the defect was entirely in which predicate decides a
+            search is live.

@@ -71,7 +71,7 @@ send `quit`.
 
 **Most bench runs do not earn a testlog entry.** Read the admission bar at the top of
 `docs/testlog.md` before appending: a bench that only confirms nothing moved is already asserted by
-the commit's `Bench:` line and checked by CI, and a figure regenerable from `main` on demand belongs
+the commit's `Bench:` line and checked by CI on push to `main`, and a figure regenerable on demand belongs
 in ROADMAP as something to re-run, not here as a number. A measured *effect* — instructions,
 time-to-depth, an ablation a later change must beat — is what earns one.
 

@@ -83,6 +83,31 @@ jobs:
       - name: Test
         run: zig build test
 
+      # CLAUDE.md: "Every commit touching search or eval carries `Bench: <nodes>`
+      # in its message." It was unenforced, and four of Phase 2's seven commits
+      # went in without one — including SEE, the largest node movement in the
+      # phase (4,737,990 -> 2,188,249). `git bisect` over a strength regression
+      # reads these lines to tell a search change from a no-op, so a gap in them
+      # lands the bisect on the wrong commit.
+      #
+      # Push-to-main only, and HEAD only, because that is where the rule bites:
+      # every branch arrives as a squash whose message the human writes at merge
+      # time, so the PR's own commits are drafts and the squash is the artefact.
+      # One commit per push, so `fetch-depth: 1` is enough.
+      - name: Bench trailer on search and eval commits
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if git show --name-only --format= HEAD | grep -qE '^src/(search|eval)\.zig$'; then
+            if ! git log -1 --format=%B HEAD | grep -qE '^Bench: [0-9]+$'; then
+              echo "::error::HEAD touches src/search.zig or src/eval.zig but carries no 'Bench: <nodes>' line."
+              exit 1
+            fi
+            echo "Bench trailer present: $(git log -1 --format=%B HEAD | grep -E '^Bench: [0-9]+$')"
+          else
+            echo "HEAD touches neither src/search.zig nor src/eval.zig; no trailer required."
+          fi
+
       - name: Release build
         run: zig build
 
