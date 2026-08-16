@@ -6,10 +6,39 @@ This is the one thing `git log` cannot reconstruct: a failed branch gets deleted
 result with it, so without this file the same dead idea gets retried every few months. A negative
 result recorded here is worth as much as a positive one.
 
-Newest entries at the bottom. **Results are append-only**: never revise a number or remove an entry,
-and if a result was wrong, append a correction. Cutting prose that only restates `git log` is not a
-revision — the numbers are the record, and this file only ever grows, so anything that is not a
-result is a tax on every future reader.
+Newest entries at the bottom. **Results are append-only**: never revise a number, and never remove
+an entry because its result is inconvenient — if a result was wrong, append a correction. What that
+protects is the record, not the page count. Removing an entry that fails the admission bar below is
+not a revision, and neither is cutting prose that only restates `git log`; the numbers are the
+record, and anything that is not one is a tax on every future reader.
+
+## What earns an entry
+
+**Most branches get no entry, and that is the normal outcome.** A compliance box, a refactor or a
+bug fix is not an experiment. An entry is for a result that would otherwise be *lost*, and that a
+future session would waste real work rediscovering — so before appending, one of these must hold:
+
+- **A failure, a rejection, or an approach abandoned.** The branch is about to be deleted and takes
+  its result with it. This is the case the file exists for, and it is the one never to skip.
+- **Any SPRT — passed, failed or stopped.** Elo appears in no other file, and each figure sets the
+  bar the next change of that kind has to beat.
+- **A merge made without a passing SPRT.** `git log` shows the merge and never the exception.
+- **A baseline or an ablation** that later work is measured against.
+- **A trap in how a measurement was taken** that would otherwise produce plausible wrong numbers
+  again.
+
+These do not earn one on their own:
+
+- **A bench that only confirms nothing moved.** The commit's `Bench:` line already asserts it and CI
+  already checks it.
+- **A number anyone can regenerate from `main` on demand.** Record *what to re-run* as a ROADMAP
+  candidate idea; the value itself is not evidence, it is a lookup.
+- **A result whose conclusion is "carry on unchanged."**
+- **Anything a commit message, a comment at the implementation site, or a skill already holds.** One
+  rule, one home.
+
+An entry that fails this bar is not neutral — it dilutes the ones that pass, and every future reader
+pays for it.
 
 ## Format
 
@@ -41,13 +70,6 @@ implementation site — restating them here is how this file stops being worth r
 ---
 
 ## Entries
-
-### 2026-08-10 — Phase 0 scaffolding
-- type:     none
-- result:   n/a
-- bench:    0 (stub — no search exists yet)
-- notes:    No engine code, so nothing to measure. Here only so the log starts where the
-            repository does.
 
 ### 2026-08-12 — Sliding attacks: PEXT with fancy-magic fallback
 - branch:   feat/magics
@@ -468,10 +490,8 @@ implementation site — restating them here is how this file stops being worth r
             almost every one of those) but the per-depth counters were not self-consistent
             and are not quoted as a result here.
 
-            Not a defect hunt: the mechanism is checked by five unit tests — band placement
-            against captures and quiets, the second slot one rank under the first, the shift
-            and its duplicate guard, captures and promotions refused a slot, and a killer
-            illegal in the position changing the order not at all.
+            Not a defect hunt: the mechanism is covered by unit tests, so what follows is a
+            statement about the evaluation and not about the implementation.
 
             Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 2,159,832.
 

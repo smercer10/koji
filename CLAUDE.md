@@ -54,8 +54,9 @@ older AMD, so detect it and keep both PEXT and plain magics rather than compilin
 
 ## Workflow
 Start with `/next`. Branch `feat/<short>` off `main`; one Elo-affecting idea per branch; write the perft
-or invariant test **first**; measure with `/bench` (speed) or `/sprt` (strength); record the outcome in
-`docs/testlog.md` **either way — failures are the point**, since deleted branches leave no trace.
+or invariant test **first**; measure with `/bench` (speed) or `/sprt` (strength). **Every SPRT goes in
+`docs/testlog.md`, passed or failed** — failures are the point, since deleted branches leave no trace.
+Everything else has to clear the admission bar at the top of that file; most branches get no entry.
 On green build + green tests + SPRT pass or proven bench-neutrality, push and open the PR, then stop:
 **the human is the final gate and does the squash-merge — Claude never merges.** Squash keeps every
 commit on `main` one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
