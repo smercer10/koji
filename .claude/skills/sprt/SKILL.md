@@ -77,5 +77,7 @@ concurrent run invalidates both results. (Policy: CLAUDE.md, Workflow.)
 
 ## Record it
 
-Append to `docs/testlog.md` using the format block at the top of that file. **Log failures too** —
-a deleted branch takes its result with it, and an unrecorded failure gets retried.
+Append to `docs/testlog.md` using the format block at the top of that file. **Every SPRT earns an
+entry — passed, failed or stopped.** It is the one measurement that always clears the admission bar
+at the top of that file: Elo appears nowhere else, a deleted branch takes its result with it, and an
+unrecorded failure gets retried.

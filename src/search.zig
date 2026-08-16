@@ -235,7 +235,9 @@ pub const Searcher = struct {
     b: Board,
 
     /// Borrowed, never owned: the table outlives any one search, `ucinewgame`
-    /// clears it from the UCI thread, and `setoption Hash` will reallocate it.
+    /// clears it from the UCI thread, and `setoption Hash` reallocates it —
+    /// through this same pointer, which is why a resize needs nothing here.
+    /// Both happen only with no search running, which is what makes that safe.
     /// A searcher pointed at `tt.Table.off` is slower and no less correct.
     tt: *tt.Table,
 

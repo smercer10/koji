@@ -60,9 +60,20 @@ constant data, or is it being computed at runtime?
 This is what "benchmark, never assume" means in the cases where the effect is smaller than the
 noise.
 
+## Timing a `go` from a script
+
+Hold stdin open. Piping a transcript that ends in `quit` aborts the search the moment it starts —
+the reader reaches `quit` and joins — and the run still prints plausible `info` lines from the
+depths it did reach, so the numbers look real. Send the commands, sleep past the search, *then*
+send `quit`.
+
 ## Record it
 
-Append a `bench` entry to `docs/testlog.md` using the format block at the top of that file.
+**Most bench runs do not earn a testlog entry.** Read the admission bar at the top of
+`docs/testlog.md` before appending: a bench that only confirms nothing moved is already asserted by
+the commit's `Bench:` line and checked by CI, and a figure regenerable from `main` on demand belongs
+in ROADMAP as something to re-run, not here as a number. A measured *effect* — instructions,
+time-to-depth, an ablation a later change must beat — is what earns one.
 
 If a change alters the bench **node count**, it is not a speed change — it changed the search, and
 it needs an SPRT.

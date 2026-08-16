@@ -277,8 +277,23 @@ const line_buffer_bytes = 1 << 20;
 /// and the size `bench` runs with — a bench measured against a table of one size
 /// and advertised as another is the kind of mismatch nobody thinks to check.
 ///
-/// `setoption name Hash` does not change it yet (ROADMAP Phase 2).
+/// The default only; `setoption name Hash` moves it within the bounds below.
 const default_hash_mb = 16;
+
+/// What `uci` advertises and what `setoption` clamps to, from one pair of
+/// constants so the promise and its enforcement cannot drift apart.
+const min_hash_mb = 1;
+const max_hash_mb = 65536;
+
+/// `max_threads` is 1 because koji searches on one thread until Lazy SMP (Phase
+/// 5) — OpenBench documents that exact narrow range for engines without parallel
+/// search, so do not widen it to look compatible. Widening it and disclaiming the
+/// truth in an `info string` is the specific fix to avoid: cutechess-cli hides
+/// `info string` without `-debug`, so the disclaimer is invisible in the
+/// automated runs where the overclaim would matter.
+/// via https://github.com/AndyGrant/OpenBench/wiki/Requirements-For-Public-Engines
+const min_threads = 1;
+const max_threads = 1;
 
 /// Depth used when `go` names no limit at all — not even a clock. Such a `go`
 /// states no ceiling, so honouring it literally means searching until `stop`,
@@ -299,6 +314,9 @@ const Engine = struct {
     /// protocol, and `isready` during a search is something GUIs really do.
     out_lock: Io.Mutex = .init,
     thread: ?std.Thread = null,
+    /// Set from dispatch until `runSearch` has written its `bestmove`. Read
+    /// through `searchLive`, never directly.
+    searching: std.atomic.Value(bool) = .init(false),
 
     /// Blocks until no search is running. Every command that touches the board
     /// goes through here first, which is what makes "one writer at a time" true
@@ -311,13 +329,40 @@ const Engine = struct {
         }
     }
 
+    /// Whether a search is running. **Not `thread != null`**: only a join clears
+    /// that, so a `go` that ended on its own leaves it set indefinitely and a
+    /// caller testing it would refuse every later command for the rest of the
+    /// game. Reaping here cannot block — `runSearch` clears the flag last.
+    fn searchLive(e: *Engine) bool {
+        if (e.thread == null) return false;
+        if (e.searching.load(.acquire)) return true;
+        e.joinSearch();
+        return false;
+    }
+
     fn say(e: *Engine, text: []const u8) void {
         e.out_lock.lockUncancelable(e.io);
         defer e.out_lock.unlock(e.io);
         e.out.writeAll(text) catch {};
         e.out.flush() catch {};
     }
+
+    /// `say` with a format string. Too long is dropped, not truncated — half an
+    /// `info string` is not better than none.
+    fn sayFmt(e: *Engine, comptime fmt: []const u8, args: anytype) void {
+        var buf: [512]u8 = undefined;
+        e.say(std.fmt.bufPrint(&buf, fmt, args) catch return);
+    }
 };
+
+/// Bounds how much of a GUI-supplied name or value an `info string` echoes.
+/// stdin is not ours to bound, and an unbounded `{s}` of it overflows `sayFmt`
+/// and drops the very message reporting the problem.
+const echo_limit = 64;
+
+fn echo(text: []const u8) []const u8 {
+    return text[0..@min(text.len, echo_limit)];
+}
 
 fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
     const stdin_buffer = try arena.alloc(u8, line_buffer_bytes);
@@ -325,16 +370,19 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
     const in = &stdin_file.interface;
 
     const searcher = try arena.create(search.Searcher);
-    // From the arena, and so never freed: it lives for the whole process, and
-    // the one thing that will want to reallocate it — `setoption name Hash` —
-    // has to hand back the old table when it does, which is the moment to give
-    // this its own allocator rather than now.
-    var table: tt.Table = try .init(arena, default_hash_mb);
+    // Not the arena, unlike everything else here: `setoption name Hash`
+    // reallocates this, and an arena never hands memory back, so every resize
+    // would leak the table it replaced.
+    const table_allocator = std.heap.page_allocator;
+    var table: tt.Table = try .init(table_allocator, default_hash_mb);
+    defer table.deinit(table_allocator);
     searcher.init(io, &table);
 
     var engine: Engine = .{ .io = io, .searcher = searcher, .out = out };
     // A search still running when stdin ends would outlive the loop and write to
-    // a writer that is about to be flushed for the last time.
+    // a writer that is about to be flushed for the last time. Registered after
+    // the table's defer so it runs before it — the reverse frees the table under
+    // a live search thread.
     defer engine.joinSearch();
 
     while (true) {
@@ -385,7 +433,7 @@ fn uciLoop(io: Io, arena: std.mem.Allocator, out: *Io.Writer) !void {
             // nothing to print here — printing one too would send two.
             engine.joinSearch();
         } else if (eql(token, "setoption")) {
-            // Phase 2: apply Hash/Threads
+            applyOption(&engine, table_allocator, it.rest());
         } else if (eql(token, "quit")) {
             engine.joinSearch();
             try out.flush();
@@ -519,6 +567,130 @@ fn parseLimits(it: *std.mem.TokenIterator(u8, .any), side: board.Color) search.L
     return limits;
 }
 
+// --- setoption ---------------------------------------------------------------
+
+const Option = struct {
+    name: []const u8,
+    /// Absent rather than empty when the line carried no `value` at all, which
+    /// is what a `button`-type option sends and is not an error.
+    value: ?[]const u8,
+};
+
+/// `name <id> [value <x>]`, over everything after the `setoption` token.
+///
+/// **Do not tokenise the name**: option names contain spaces, and `Move
+/// Overhead` is already coming in Phase 3. The literal `value` delimits, and the
+/// value keeps its spaces because a `string` option's value is free text.
+/// Leftmost `value` wins — the other rule breaks a value containing the word.
+///
+/// Null means the line was not a `setoption` at all; an empty name is not, and
+/// the caller reports it as unknown.
+fn parseOption(rest: []const u8) ?Option {
+    // `name` and `value` are protocol literals, matched exactly. Only the option
+    // name is matched loosely, at the call site.
+    const text = std.mem.trim(u8, rest, " \t");
+    if (!std.mem.startsWith(u8, text, "name")) return null;
+
+    const after = text["name".len..];
+    // `name` has to be a whole token, or `nameHash` would parse as this command.
+    if (after.len != 0 and after[0] != ' ' and after[0] != '\t') return null;
+
+    var it = std.mem.tokenizeAny(u8, after, " \t");
+    var name_end: usize = 0;
+    while (it.next()) |token| {
+        if (eql(token, "value")) return .{
+            .name = std.mem.trim(u8, after[0..name_end], " \t"),
+            .value = std.mem.trim(u8, it.rest(), " \t"),
+        };
+        name_end = it.index;
+    }
+    return .{ .name = std.mem.trim(u8, after, " \t"), .value = null };
+}
+
+/// The integer `text` denotes, saturating rather than failing when it is too
+/// large for `i64`. Null only when it is not a number at all.
+///
+/// **Signed on purpose** — an unsigned parse turns `-1` into "is not a number",
+/// applying a harsher rule to one direction of the same mistake. `-1` and 10^30
+/// are out-of-range numbers, and the caller clamps them like any other.
+fn spinValue(text: []const u8) ?i64 {
+    return std.fmt.parseInt(i64, text, 10) catch |err| switch (err) {
+        error.Overflow => if (text.len != 0 and text[0] == '-')
+            std.math.minInt(i64)
+        else
+            std.math.maxInt(i64),
+        error.InvalidCharacter => null,
+    };
+}
+
+/// The value of a spin option, clamped to the range `uci` advertised. Clamping
+/// rather than rejecting: an out-of-range value still says which direction the
+/// GUI wants. Null is the different case of no usable number at all.
+fn optionValue(e: *Engine, opt: Option, min: i64, max: i64) ?i64 {
+    const text = opt.value orelse {
+        e.sayFmt("info string option {s} needs a value\n", .{echo(opt.name)});
+        return null;
+    };
+    const n = spinValue(text) orelse {
+        e.sayFmt("info string option {s} value {s} is not a number\n", .{
+            echo(opt.name),
+            echo(text),
+        });
+        return null;
+    };
+    const clamped = std.math.clamp(n, min, max);
+    if (clamped != n) e.sayFmt("info string {s} {d} out of range, clamped to {d}\n", .{
+        echo(opt.name),
+        n,
+        clamped,
+    });
+    return clamped;
+}
+
+/// `setoption name <id> [value <x>]`. UCI has no error reply, so every failure
+/// here is an `info string` — silence would leave a GUI believing it had set
+/// something it had not.
+fn applyOption(e: *Engine, allocator: std.mem.Allocator, rest: []const u8) void {
+    // **Refuse, do not join.** Unlike every other command here, `joinSearch`
+    // would make the search print a `bestmove` the GUI never asked for and may
+    // play — and a `Hash` resize would free a table the search is reading. The
+    // spec only sends `setoption` when the engine is waiting, so this costs one
+    // out-of-spec command.
+    if (e.searchLive()) {
+        e.say("info string setoption ignored during a search\n");
+        return;
+    }
+
+    const opt = parseOption(rest) orelse {
+        e.say("info string setoption command not understood\n");
+        return;
+    };
+
+    if (std.ascii.eqlIgnoreCase(opt.name, "Hash")) {
+        // Non-negative by construction: the clamp floor is `min_hash_mb`.
+        const mb: usize = @intCast(optionValue(e, opt, min_hash_mb, max_hash_mb) orelse return);
+        e.searcher.tt.resize(allocator, mb) catch {
+            // Still live: `Table.resize` allocates before it frees for this case.
+            e.sayFmt("info string Hash {d} could not be allocated, keeping {d}MB\n", .{
+                mb,
+                e.searcher.tt.allocatedMb(),
+            });
+            return;
+        };
+        // Quiet on an exact fit; `init` rounds down, so anything else got less
+        // than it asked for and should hear so.
+        const got = e.searcher.tt.allocatedMb();
+        if (got != mb) e.sayFmt("info string Hash {d} rounded down to {d}MB\n", .{ mb, got });
+    } else if (std.ascii.eqlIgnoreCase(opt.name, "Threads")) {
+        // Discarded deliberately: at `max_threads` 1 the only value this yields
+        // is the one koji already runs at, so a field to hold it could not vary.
+        // Phase 5 adds one. The clamp is what this branch buys today.
+        _ = optionValue(e, opt, min_threads, max_threads) orelse return;
+    } else {
+        e.sayFmt("info string unknown option {s}\n", .{echo(opt.name)});
+    }
+}
+
 fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
     e.joinSearch();
     // Read after the join: the side to move is only settled once any previous
@@ -528,6 +700,9 @@ fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
     // Armed here rather than inside the search: a `stop` can arrive before the
     // thread reaches its first node, and clearing it there would swallow it.
     e.searcher.clearStop();
+    // Before the spawn for the same reason: `searchLive` can be asked before the
+    // new thread runs an instruction.
+    e.searching.store(true, .release);
 
     e.thread = std.Thread.spawn(.{}, runSearch, .{ e, limits }) catch {
         // No thread available: search on this thread instead. `stop` cannot be
@@ -541,16 +716,22 @@ fn startSearch(e: *Engine, it: *std.mem.TokenIterator(u8, .any)) !void {
 fn runSearch(e: *Engine, limits: search.Limits) void {
     const result = e.searcher.search(limits, .{ .ctx = e, .emit = emitInfo });
 
-    e.out_lock.lockUncancelable(e.io);
-    defer e.out_lock.unlock(e.io);
-    if (result.move) |m| {
-        e.out.print("bestmove {f}\n", .{m}) catch {};
-    } else {
-        // No legal move: the game is over. UCI has no better spelling than the
-        // null move, and a GUI that gets nothing at all will hang.
-        e.out.writeAll("bestmove 0000\n") catch {};
+    {
+        e.out_lock.lockUncancelable(e.io);
+        defer e.out_lock.unlock(e.io);
+        if (result.move) |m| {
+            e.out.print("bestmove {f}\n", .{m}) catch {};
+        } else {
+            // No legal move: the game is over. UCI has no better spelling than
+            // the null move, and a GUI that gets nothing at all will hang.
+            e.out.writeAll("bestmove 0000\n") catch {};
+        }
+        e.out.flush() catch {};
     }
-    e.out.flush() catch {};
+
+    // Last, and outside the lock: this releases the reader thread, which must not
+    // accept a command while `bestmove` is still unwritten.
+    e.searching.store(false, .release);
 }
 
 fn emitInfo(ctx: *anyopaque, info: search.Info) void {
@@ -595,8 +776,16 @@ fn identify(out: *Io.Writer) Io.Writer.Error!void {
     try out.writeAll("id author koji contributors\n");
 
     // Hash and Threads are mandatory for OpenBench and expected by every GUI.
-    try out.print("option name Hash type spin default {d} min 1 max 65536\n", .{default_hash_mb});
-    try out.writeAll("option name Threads type spin default 1 min 1 max 256\n");
+    try out.print("option name Hash type spin default {d} min {d} max {d}\n", .{
+        default_hash_mb,
+        min_hash_mb,
+        max_hash_mb,
+    });
+    try out.print("option name Threads type spin default {d} min {d} max {d}\n", .{
+        min_threads,
+        min_threads,
+        max_threads,
+    });
 
     // Tuning knobs appear only in a -Dtunables build. A release must advertise
     // nothing here beyond the real options above.
@@ -673,6 +862,74 @@ test "a release build advertises no tuning options" {
         const name = std.mem.sliceTo(line["option name ".len..], ' ');
         try std.testing.expect(eql(name, "Hash") or eql(name, "Threads"));
     }
+}
+
+test "setoption splits a name from a value at the `value` token" {
+    const expectOption = struct {
+        fn f(rest: []const u8, name: []const u8, value: ?[]const u8) !void {
+            const opt = parseOption(rest) orelse return error.NotParsed;
+            try std.testing.expectEqualStrings(name, opt.name);
+            if (value) |v| {
+                try std.testing.expectEqualStrings(v, opt.value orelse return error.NoValue);
+            } else {
+                try std.testing.expectEqual(@as(?[]const u8, null), opt.value);
+            }
+        }
+    }.f;
+
+    try expectOption("name Hash value 32", "Hash", "32");
+    // The case a token-per-field parser gets wrong, and the reason this function
+    // exists: `Move Overhead` is already named in search.zig as a Phase 3 option.
+    try expectOption("name Move Overhead value 30", "Move Overhead", "30");
+    // A `string`-type value is free text, so the value keeps its spaces too.
+    try expectOption("name SyzygyPath value /a/b /c/d", "SyzygyPath", "/a/b /c/d");
+    // No `value` at all is a `button`-type option, not a malformed line.
+    try expectOption("name Clear Hash", "Clear Hash", null);
+    // Leftmost `value` wins — documented on `parseOption`, pinned here.
+    try expectOption("name Foo value bar value baz", "Foo", "bar value baz");
+    // Whatever spacing a GUI uses, including the tabs the loop already tolerates.
+    try expectOption("  name\tHash\tvalue\t64  ", "Hash", "64");
+    // Case is preserved rather than folded: matching loosely is the caller's job.
+    try expectOption("name hAsH value 1", "hAsH", "1");
+    // An empty name parses, and is reported as an unknown option like any other.
+    try expectOption("name value 5", "", "5");
+
+    // Not a `setoption` body at all.
+    try std.testing.expectEqual(@as(?Option, null), parseOption(""));
+    try std.testing.expectEqual(@as(?Option, null), parseOption("value 32"));
+    // `name` must be a whole token, or this would set an option called "Hash".
+    try std.testing.expectEqual(@as(?Option, null), parseOption("nameHash value 32"));
+}
+
+test "a spin value is a number or nothing, and never an error for being extreme" {
+    // The point of the signed, saturating parse: every one of these is a number
+    // out of range, and the caller clamps them all the same way. An unsigned
+    // parse would call the negative one unreadable instead.
+    try std.testing.expectEqual(@as(?i64, 32), spinValue("32"));
+    try std.testing.expectEqual(@as(?i64, -1), spinValue("-1"));
+    try std.testing.expectEqual(@as(?i64, std.math.maxInt(i64)), spinValue("999999999999999999999"));
+    try std.testing.expectEqual(@as(?i64, std.math.minInt(i64)), spinValue("-999999999999999999999"));
+
+    // Not numbers at all, which is the one case the caller reports rather than
+    // clamps.
+    try std.testing.expectEqual(@as(?i64, null), spinValue("abc"));
+    try std.testing.expectEqual(@as(?i64, null), spinValue(""));
+    try std.testing.expectEqual(@as(?i64, null), spinValue("12x"));
+}
+
+test "a resized table is the size Hash asked for, rounded down" {
+    // The engine-side path is covered by tt.zig's own resize test; this pins the
+    // conversion `applyOption` reports back to the GUI, which is where a
+    // rounded-down request has to stop being invisible.
+    var t: tt.Table = try .init(std.testing.allocator, 16);
+    defer t.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 16), t.allocatedMb());
+
+    try t.resize(std.testing.allocator, 3);
+    try std.testing.expectEqual(@as(usize, 2), t.allocatedMb());
+
+    try t.resize(std.testing.allocator, 64);
+    try std.testing.expectEqual(@as(usize, 64), t.allocatedMb());
 }
 
 // The perft tests, shallow and deep, live in `perft.zig` beside the driver they

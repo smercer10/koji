@@ -56,7 +56,8 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] Killer moves
 - [x] PSQT + tapered evaluation
 - [x] History heuristic
-- [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
+- [x] Apply `setoption` — `Hash` resizes the table; `Threads` advertises `max 1`, which is what
+      koji can do until Phase 5
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
 
@@ -193,6 +194,11 @@ commitment to implement it.
   rather than clearing it per search. Blocked on a decision, not on code — the classic scheme
   carries state between `bench` positions, which is what the killers reset exists to refuse, so
   taking it would mean changing what `bench` means.
+- Raise the default `Hash` above 16MB. Now re-runnable at will, since `setoption` applies it:
+  startpos `go depth 11` costs 1.69x the nodes at 1MB that it does at 16MB, while 256MB takes only
+  6% more off and is *slower* in wall clock — so 16MB is near the knee at that depth, which was luck
+  rather than judgement. Phase 3's pruning changes the tree the curve is measured over, so re-measure
+  there before moving the constant, and decide it by SPRT at a long control rather than by nodes.
 - Four transposition table entries to a cache line instead of one, replacing the worst of the four.
   A probe already fetches the whole line and uses 16 bytes of it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before

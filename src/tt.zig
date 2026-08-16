@@ -125,6 +125,25 @@ pub const Table = struct {
         t.* = .off;
     }
 
+    /// Reallocate at a new size, in the megabytes `Hash` speaks. Serves
+    /// `setoption name Hash`; the table it leaves is empty, which is what a GUI
+    /// asking for a different size means.
+    ///
+    /// **Allocates before it frees, and the order is the whole point.** koji
+    /// advertises `Hash` up to 65536, so a GUI may legally ask for 64GB and be
+    /// refused by the OS. Freeing first would answer that request by leaving the
+    /// engine with no table at all — it would play on, slower and no less
+    /// correct, having lost a table it was using because it was asked for one it
+    /// could not have. Failing here changes nothing instead, and the caller keeps
+    /// what it had.
+    ///
+    /// Callers must free with the same allocator they pass here.
+    pub fn resize(t: *Table, allocator: std.mem.Allocator, megabytes: usize) !void {
+        const fresh: Table = try .init(allocator, megabytes);
+        t.deinit(allocator);
+        t.* = fresh;
+    }
+
     /// Back to the state `init` leaves: every entry empty, the generation back at
     /// the start. `ucinewgame`, and every `bench` position.
     pub fn clear(t: *Table) void {
@@ -195,6 +214,13 @@ pub const Table = struct {
         };
     }
 
+    /// The size actually allocated, in the megabytes `Hash` speaks. `init` rounds
+    /// down to a power of two entries, so this is what a caller *got* rather than
+    /// what it asked for — 3MB of request is 2MB of table.
+    pub fn allocatedMb(t: *const Table) usize {
+        return (t.entries.len * @sizeOf(Entry)) >> 20;
+    }
+
     /// Occupancy in permill, the unit UCI's `info hashfull` wants. Samples the
     /// first thousand entries rather than counting them all: this is only ever
     /// asked between iterations, but walking 16MB to answer it would still be
@@ -241,6 +267,37 @@ test "a size in megabytes becomes a power of two entries, rounded down" {
     var nothing: Table = try .init(testing.allocator, 0);
     defer nothing.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 0), nothing.entries.len);
+}
+
+test "resize gives a table of the new size, empty, and keeps the old one on failure" {
+    var t: Table = try .init(testing.allocator, 1);
+    defer t.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1 << 16), t.entries.len);
+
+    t.newSearch();
+    t.store(0xabc, some_move, 1, 1, .exact);
+    try testing.expect(t.probe(0xabc) != null);
+
+    // Growing, shrinking, and the same round-down `init` applies.
+    try t.resize(testing.allocator, 4);
+    try testing.expectEqual(@as(usize, 1 << 18), t.entries.len);
+    try t.resize(testing.allocator, 3);
+    try testing.expectEqual(@as(usize, 1 << 17), t.entries.len);
+
+    // A resized table is a fresh one: the entry above is gone rather than
+    // rehashed, and the generation is back at the start.
+    try testing.expectEqual(@as(?Entry, null), t.probe(0xabc));
+    try testing.expectEqual(@as(u6, 0), t.generation);
+    for (t.entries) |entry| try testing.expectEqual(Bound.none, entry.meta.bound);
+
+    // The reason `resize` allocates before it frees. A failing allocation must
+    // leave the caller with the table it already had — a UCI engine that answered
+    // `setoption name Hash value 65536` by losing its table would then play on
+    // with none, which is the one outcome worse than refusing the request.
+    const before = t.entries;
+    try testing.expectError(error.OutOfMemory, t.resize(testing.failing_allocator, 1));
+    try testing.expectEqual(before.ptr, t.entries.ptr);
+    try testing.expectEqual(before.len, t.entries.len);
 }
 
 test "a fresh table is empty everywhere" {
