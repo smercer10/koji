@@ -53,9 +53,9 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] MVV-LVA move ordering, in the main search as well as in quiescence
 - [x] SEE, splitting the captures into winning and losing, and not searching the losing ones
       in quiescence
-- [ ] Killer moves
-- [ ] History heuristic
+- [x] Killer moves
 - [ ] PSQT + tapered evaluation
+- [ ] History heuristic
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game

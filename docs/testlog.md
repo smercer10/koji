@@ -433,7 +433,8 @@ implementation site — restating them here is how this file stops being worth r
 ### 2026-08-16 — Killer moves: correct, and a time-to-depth regression at this eval
 - branch:   feat/killers
 - type:     bench
-- result:   **FAIL** — -1.30% nodes bought at +2.01% wall clock. No SPRT run.
+- result:   **FAIL** — -1.30% nodes bought at +2.01% wall clock. No SPRT run. Merged
+            anyway, deliberately; the reason is at the end of this entry.
 - bench:    2159832 (was 2188249)
 - machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
 - notes:    Two slots per ply, stored on a beta cutoff by a quiet move, ranked between
@@ -470,13 +471,19 @@ implementation site — restating them here is how this file stops being worth r
             Not a defect hunt: the mechanism is checked by five unit tests — band placement
             against captures and quiets, the second slot one rank under the first, the shift
             and its duplicate guard, captures and promotions refused a slot, and a killer
-            illegal in the position changing the order not at all. Those and the ordering
-            code stay on the branch.
+            illegal in the position changing the order not at all.
 
             Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 2,159,832.
 
-            **Re-run after PSQT + tapered evaluation, not before.** This is the same finding
-            the SEE entry ends on one box earlier, now with an ablation under it: two ordering
-            boxes in a row have returned nearly nothing because the thing they order is
-            invisible to a material-only eval. The roadmap orders killers and history ahead
-            of PSQT; this result argues that order is backwards.
+            **Merged despite the regression** — a deliberate exception, recorded here because
+            `git log` will not show one, and the second in two boxes after SEE. The judgement is
+            that the mechanism is correct and its cost is paid to a scoring pass that is already
+            on the candidate list to be made lazy, so the branch is kept as working code rather
+            than re-derived later. It is a 2% time-to-depth regression on `main` until then, and
+            nothing here pretends otherwise.
+
+            **Re-measure after PSQT + tapered evaluation.** This is the same finding the SEE
+            entry ends on one box earlier, now with an ablation under it: two ordering boxes in
+            a row have returned nearly nothing because the thing they order is invisible to a
+            material-only eval. PSQT moves ahead of history in the roadmap for that reason. If
+            the re-measurement still shows a loss, the honest move is to take killers back out.

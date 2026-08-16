@@ -257,8 +257,7 @@ Two rules:
 > https://dl.acm.org/doi/10.1145/800179.810240 — CPW lists both alongside Gillogly 1971 and
 > singles out no inventor, so neither is claimed here as *the* origin.
 > via https://www.chessprogramming.org/Killer_Heuristic — trail: *ubiquitous in alpha-beta engines
-> by the 1980s; no first shipping engine is identifiable*. Measured a net loss in koji and not
-> merged (docs/testlog.md, 2026-08-16); the entry stands because the implementation does.
+> by the 1980s; no first shipping engine is identifiable*
 
 > **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
 > as an "enhancement" over a single deadline and names no originator)* via
