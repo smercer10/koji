@@ -75,6 +75,30 @@ session for all of them.
 **Before starting: check nothing else is measuring.** An SPRT owns the whole machine and a
 concurrent run invalidates both results. (Policy: CLAUDE.md, Workflow.)
 
+## The smoke match
+
+Not an SPRT and never gets a testlog entry — a correctness check that the engine still *plays*.
+Required before pushing anything that touches the UCI loop, the search thread or `Engine`
+(CLAUDE.md, Workflow). Ten games, about a minute:
+
+```
+./tools/fastchess/fastchess \
+  -engine cmd=/tmp/koji-test name=test \
+  -engine cmd=/tmp/koji-base name=base \
+  -each tc=8+0.08 -rounds 5 -repeat -recover -concurrency 1 \
+  -openings file=books/UHO_Lichess_4852_v1.epd format=epd order=random
+```
+
+**Read `Timeouts:` and `Crashed:`, not the score** — ten games say nothing about strength and
+everything about whether the engine answers at all. Either count above zero fails the gate.
+
+`-concurrency 1`: a timeout is the signal here, and an oversubscribed machine manufactures those.
+This still owns the machine like any other match.
+
+**When it fails, build `main` and play it against the same opponent before theorising.** That
+comparison localises the branch as the cause in one run; on 2026-08-16 the two hours before it went
+into re-reading time-management code that was never involved.
+
 ## Record it
 
 Append to `docs/testlog.md` using the format block at the top of that file. **Every SPRT earns an

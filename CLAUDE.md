@@ -57,7 +57,10 @@ Start with `/next`. Branch `feat/<short>` off `main`; one Elo-affecting idea per
 or invariant test **first**; measure with `/bench` (speed) or `/sprt` (strength). **Every SPRT goes in
 `docs/testlog.md`, passed or failed** — failures are the point, since deleted branches leave no trace.
 Everything else has to clear the admission bar at the top of that file; most branches get no entry.
-On green build + green tests + SPRT pass or proven bench-neutrality, push and open the PR, then stop:
+**Anything touching the UCI loop, the search thread or `Engine` plays ten games before it is green**
+(`/sprt`, smoke match): the unit gate cannot see a silent engine — a suppressed `bestmove` once
+passed 161 tests, the formatter, the hook vectors, a bit-identical bench and CI (testlog 2026-08-16).
+On green build + green tests + smoke match + SPRT pass or proven bench-neutrality, push and open the PR, then stop:
 **the human is the final gate and does the squash-merge — Claude never merges.** Squash keeps every
 commit on `main` one validated idea carrying its own `Bench:` line — that is what keeps `git bisect`
 usable when strength regresses. The PR title becomes the squash subject, so commit subjects and PR
