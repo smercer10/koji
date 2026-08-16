@@ -203,7 +203,40 @@ Two rules:
 > set, 100/320/330/500/900, is **Tomasz Michniewski's**, 1995, from his Simplified Evaluation
 > Function* via https://www.chessprogramming.org/Point_Value — trail: *CPW tabulates a dozen
 > independently proposed sets spanning 1940 to 2012; there is no single "standard" refinement, only
-> named ones*
+> named ones*. The **endgame row**, 115/300/320/540/950, is koji's own: the midgame row was kept
+> unchanged when tapering landed so the branch's variable stayed the tables, and the endgame one
+> only states the two facts every source agrees on — pawns and rooks gain as the board empties,
+> minor pieces give a little back
+
+> **piece-square tables** — origin: *Jack Good, "A Five Year Plan for Automatic Chess", Machine
+> Intelligence 2, Edinburgh University Press, 1968 — the earliest publication CPW identifies on
+> piece-and-square values* via https://www.chessprogramming.org/Piece-Square_Tables — trail: *CPW
+> attributes the pre-computed-table form, as against computing positional value procedurally at
+> eval time, to James Gillogly's Tech, late 1960s; standard in engines through the 1980s-90s. The
+> two widely reused numeric sets are Tomasz Michniewski's Simplified Evaluation Function and Ronald
+> Friederich's Texel-tuned PeSTO/RofChade tables, 2018* — **koji uses neither.** Its tables are
+> generated at comptime in `board.zig` from named constants over board geometry. CPW is CC BY-SA
+> 3.0 and this repository links and paraphrases it rather than pasting it, which rules out
+> transcribing the published tables; generating them also keeps each constant next to the chess
+> claim it encodes. RofChade has no public source repository to check a licence against, which is
+> a second reason not to reach for its numbers
+
+> **tapered evaluation** — origin: *Hans Berliner, "On the Construction of Evaluation Functions for
+> Large Domains", IJCAI-79, Tokyo, pp. 53-55, section III "Smoothness"* via
+> https://bkgm.com/articles/Berliner/EvaluationFunctionsLargeDomains/ — trail: *CPW names The King
+> (1991) and Phalanx as early adopters; it became mainstream after Fruit (Fabien Letouzey, 2005)
+> as the fix for evaluation discontinuity at a hand-placed midgame/endgame threshold. Fruit 2.1 is
+> GPL-2.0, checked on the MoonstoneLight/Fruit-Chess mirror — no official Letouzey repository
+> exists, and versions after 2.1 became closed-source freeware*. The 24-point phase scale and the
+> single-division blend are separately *unclear (folklore; CPW's Tapered Eval page presents the
+> weights and credits no author for them)* via https://www.chessprogramming.org/Tapered_Eval
+
+> **packing a midgame and an endgame score into one integer** — origin: *unclear (no source found
+> credits an inventor; the earliest documented description is community discussion of the idiom on
+> TalkChess, October 2016, which explains an existing implementation rather than crediting anyone,
+> and whether the trick predates that is not established by anything read here)* via
+> https://minuskelvin.net/chesswiki/content/packed-eval.html — CPW's Score page is **not** the
+> source for this and does not describe it, recorded so the next reader does not go looking there
 
 > **quiescence search** — origin: *unclear (folklore of the 1970s programs; CPW names no
 > originator). The earliest published use of "quiescence" in this sense CPW records is Larry

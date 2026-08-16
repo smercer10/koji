@@ -21,7 +21,6 @@ const std = @import("std");
 
 const board = @import("board.zig");
 const Board = board.Board;
-const Color = board.Color;
 const PieceType = board.PieceType;
 
 /// Centipawns, from the perspective of the side to move. 32 bits rather than 16:

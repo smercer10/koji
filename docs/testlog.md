@@ -487,3 +487,52 @@ implementation site — restating them here is how this file stops being worth r
             a row have returned nearly nothing because the thing they order is invisible to a
             material-only eval. PSQT moves ahead of history in the roadmap for that reason. If
             the re-measurement still shows a loss, the honest move is to take killers back out.
+
+### 2026-08-16 — PSQT and tapered evaluation
+- branch:   feat/psqt
+- type:     SPRT
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS**
+- LLR:      2.96 (-2.94, 2.94)
+- Elo:      +676.08 +/- 157.59
+- games:    300 (292-4-4)
+- bench:    3006951 (was 2159832)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    **Read the Elo as "an evaluation beats no evaluation", not as a claim about these
+            tables.** The baseline could not tell one quiet move from another, so almost any
+            positional signal would have passed; +676 sets no bar for what replaces it. The
+            tables are generated from 15 constants and have never been tuned.
+
+            `perf stat -r 5`, `testdata/bench.epd`, 16 positions, depth 6:
+
+                                nodes     instructions   insn/node      wall clock
+              main          2,159,832    3,257,787,088        1508   0.28834 s +/- 1.28%
+              psqt          3,006,951    4,414,674,266        1468   0.39782 s +/- 1.07%
+              change          +39.22%          +35.51%      -2.67%         +37.97%
+
+            **Instructions per node went down.** Folding material into the tables makes
+            `evaluate` one interpolation where it was twelve popcounts, which more than pays
+            for the extra lookup `put`/`remove`/`movePiece` now do — so the accumulator was
+            worth building up front rather than deferring. The whole wall-clock cost is the
+            39% wider tree, which is what a discriminating eval does at fixed depth, and it is
+            bought back many times over by the Elo.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 3,006,951.
+
+            **The killers question from the entry above is answered.** That entry's node bound
+            measured a different engine once the leaves changed value, so it had to be
+            re-derived; doing so re-ran the ablation. Kiwipete, depth 7, no table:
+
+                              killers off      killers on      change
+              material only     3,438,106       3,429,345      -0.25%
+              with PSQT         3,849,447       3,799,071      -1.31%
+
+            Five times the node reduction from the same code. The diagnosis in that entry was
+            right — killers were never the problem, the eval they ordered against was — and
+            the honest move it proposed, taking them back out, is off the table.
+
+            Three parked experiments are now worth running, and were not before: the SEE
+            ordering-versus-pruning ablation, losing captures ahead of the quiets rather than
+            behind them, and the LVA ablation. All three were held back for the same reason.

@@ -207,20 +207,13 @@ pub const zobrist: Zobrist = blk: {
 
 // --- piece-square tables ----------------------------------------------------------
 //
-// What a piece on a square is worth, midgame and endgame, before the search has
-// looked at anything. This lives here and not in `eval.zig` for the same reason
-// the Zobrist keys do: `put`/`remove`/`movePiece` maintain the running total, so
-// the table has to be reachable from where the maintenance happens — and
-// `eval.zig` imports `movegen.zig`, which imports `move.zig`, so a table over
-// there would close an import cycle. board.zig owns the static fact about a
-// piece on a square; eval.zig owns what to do with the total.
+// Lives here and not in `eval.zig` because `put`/`remove`/`movePiece` maintain
+// the running total, and `eval.zig` imports `movegen.zig` imports `move.zig`, so
+// a table over there would close an import cycle. Moving it back is the edit
+// this comment exists to stop.
 //
-// **The values are koji's own**, generated below from named constants over board
-// geometry. Not a stylistic choice: published tables are published on CPW, CPW is
-// CC BY-SA 3.0, and CREDITS.md commits to linking and paraphrasing it rather than
-// pasting it. Generating them also makes them auditable — each constant is next
-// to the chess fact it claims to encode, which 768 hand-written numbers would not
-// be — and leaves every one of them a ready-made SPSA knob for Phase 5.
+// The values are koji's own, generated below rather than transcribed. Why, and
+// what that rules out, is in CREDITS.md.
 //
 // origin: piece-square tables — Jack Good, "A Five Year Plan for Automatic
 //         Chess", Machine Intelligence 2, Edinburgh University Press, 1968,
@@ -235,61 +228,47 @@ pub const zobrist: Zobrist = blk: {
 //         inventor, and CPW's Score page does not describe the trick at all)
 //         via https://minuskelvin.net/chesswiki/content/packed-eval.html
 
-/// A midgame and an endgame score in one `i32`: `(mg << 16) + eg`. One add
-/// accumulates both halves and the table costs 4KB rather than 8KB.
-///
-/// The halves are *not* independent — a negative `eg` borrows out of the low
-/// half — and the `+ 0x8000` in `mgOf` is exactly what repairs that. Addition
-/// and subtraction stay componentwise regardless. Asserted by test rather than
-/// trusted: see "packed scores survive the borrow" below.
+/// A midgame and an endgame score in one `i32`: `(mg << 16) + eg`, so one add
+/// carries both halves. They are *not* independent — a negative `eg` borrows out
+/// of the low half, and the `+ 0x8000` in `mgOf` is what repairs it. Tested, not
+/// trusted: "packed scores survive the borrow" in eval.zig sweeps the range.
 pub const PackedScore = i32;
 
 pub fn pack(mg: i32, eg: i32) PackedScore {
     return (mg << 16) + eg;
 }
 
-/// Recovers the midgame half. The `+ 0x8000` cancels the borrow a negative
-/// endgame half took out of it.
 pub fn mgOf(s: PackedScore) i32 {
     return (s + 0x8000) >> 16;
 }
 
-/// Recovers the endgame half — the low 16 bits, read back as signed.
 pub fn egOf(s: PackedScore) i32 {
     return @as(i16, @truncate(s));
 }
 
-/// Centipawns per piece type before the square is considered. Split by phase:
-/// pawns and rooks are worth more once the board empties, minor pieces slightly
-/// less. The midgame row is the set koji already shipped, unchanged, so this
-/// branch's variable is the tables and the taper rather than a material retune.
-///
-/// Folded into `piece_square` at comptime, so `evaluate` never adds them
-/// separately. Folding is the choice CPW warns about — it contaminates capture
-/// ordering with positional noise if the ordering reads these values — but
-/// nothing here does: `see.zig` deliberately keeps its own copy (see the note
-/// there) and MVV-LVA ranks by piece-type tier, not centipawns. `evaluate` is
-/// the only reader, so the objection does not reach koji.
+/// Folded into `piece_square` at comptime. Safe to fold only because nothing
+/// but `evaluate` reads them: `see.zig` keeps its own copy (see the note there)
+/// and MVV-LVA ranks by piece-type tier. **Give a second reader these values and
+/// capture ordering inherits positional noise** — that is what folding costs.
 pub const piece_value_mg: [6]i32 = .{ 100, 320, 330, 500, 900, 0 };
 pub const piece_value_eg: [6]i32 = .{ 115, 300, 320, 540, 950, 0 };
 
-/// Distance from the centre along one axis, doubled to stay integer:
-/// 7, 5, 3, 1, 1, 3, 5, 7 for coordinates 0..7.
+// Board geometry the knobs below are scaled against. `axisDist` runs
+// 7,5,3,1,1,3,5,7 across a rank or file, so `axisCentre` runs 0,2,4,6,6,4,2,0
+// and `centrality` peaks at 12 on the four centre squares; `ring` is 0 on the
+// rim and 3 on the central 2x2.
 fn axisDist(x: i32) i32 {
     return @intCast(@abs(2 * x - 7));
 }
 
-/// The inverse: 0, 2, 4, 6, 6, 4, 2, 0. Higher is nearer the middle.
 fn axisCentre(x: i32) i32 {
     return 7 - axisDist(x);
 }
 
-/// 0 on a corner, 12 on one of the four centre squares.
 fn centrality(f: i32, r: i32) i32 {
     return axisCentre(f) + axisCentre(r);
 }
 
-/// Rings inward: 0 on the rim, 3 on the central 2x2.
 fn ring(f: i32, r: i32) i32 {
     return @min(@min(f, 7 - f), @min(r, 7 - r));
 }
@@ -298,66 +277,68 @@ fn onLongDiagonal(f: i32, r: i32) bool {
     return f == r or f + r == 7;
 }
 
-// The knobs. Every one of these is a chess claim, and the comment on it is the
-// claim rather than a description of the arithmetic.
+// The knobs, and the chess each one claims. Keeping the claim next to the number
+// is what makes a generated table auditable and a retune reviewable — an edit
+// that contradicts the line above it is a bug, an edit that agrees is tuning.
+// Every one of these is an SPSA knob for Phase 5.
 
-/// A pawn is worth more the further it has gone, and much more so in an endgame
-/// where the promotion square is reachable — hence the square term on `eg`.
+// Pawns: advancing is worth more the nearer the promotion square, and far more
+// once there is an endgame to escort it through. Central pawns fight for the
+// centre and rook pawns mostly do not, and one still on d2/e2 has a bishop
+// locked in behind it.
 const pawn_advance_mg = 3;
 const pawn_advance_eg = 11;
-/// Central pawns fight for the centre; rook pawns mostly do not.
 const pawn_centre_file_mg = 4;
-/// A pawn still on d2/e2 has a bishop locked in behind it.
 const pawn_unmoved_centre_mg = -18;
 
-/// A knight is short-range, so its value is dominated by how much board it can
-/// reach — the strongest centrality term of any piece.
+// Knights are short-range, so their value is dominated by how much board they
+// can reach: the strongest centrality term of any piece, a rim that is dim, and
+// a bonus for the advanced-and-central squares a knight is actually posted on.
 const knight_centre_mg = 5;
 const knight_centre_eg = 4;
-/// "A knight on the rim is dim."
 const knight_rim_mg = -14;
-/// Advanced *and* central: the squares a knight is actually posted on.
 const knight_outpost_mg = 6;
 
+// Bishops: mild centrality, and a bonus for the two long diagonals, which are
+// the most reach a bishop can have.
 const bishop_centre_mg = 3;
 const bishop_centre_eg = 3;
-/// A bishop's reach is the diagonal it sits on, and the long ones are longest.
 const bishop_long_diagonal_mg = 12;
 const bishop_rim_mg = -8;
 
-/// A rook on the seventh cuts the king off and eats the pawn rank.
+// Rooks: the seventh cuts the king off and eats the pawn rank. The file term is
+// a weak stand-in for openness, which a square alone cannot see, and the corner
+// penalty is for being undeveloped behind an unmoved rook pawn.
 const rook_seventh_mg = 22;
 const rook_seventh_eg = 12;
-/// A weak stand-in for file openness, which a square alone cannot see.
 const rook_centre_file_mg = 4;
-/// Undeveloped, and usually still behind an unmoved rook pawn.
 const rook_corner_mg = -8;
 
-/// Deliberately mild in the midgame: a queen's placement is about tempo, which
-/// is invisible from a square, and a strong term here just makes it wander.
+// Queens: mild on purpose. A queen's placement is about tempo, which is
+// invisible from a square, so a strong centrality term here only makes her
+// wander; the sortie penalty is for coming out early and being chased.
 const queen_centre_mg = 1;
 const queen_centre_eg = 4;
-/// Out early and it gets chased around by developing moves.
 const queen_early_sortie_mg = -9;
 
-/// The king walking up the board in the midgame is how games are lost.
+// Kings: walking up the board in the midgame is how games are lost, castling
+// either wing is how they are not, and the central files are the ones that open
+// first. In the endgame the king is a piece again and belongs in the middle —
+// the one term that reverses sign between the phases, and the reason tapering
+// earns its place rather than merely interpolating.
 const king_rank_penalty_mg = -22;
-/// Castled, either wing.
 const king_flank_shelter_mg = 14;
-/// The central files are the ones that open first.
 const king_centre_file_mg = -16;
-/// And in the endgame it is a piece again, and belongs in the middle.
 const king_centre_eg = 6;
 
-/// The generator, in white's orientation with rank 0 as white's back rank.
+/// White's orientation, rank 0 being white's back rank.
 fn squareScore(t: PieceType, f: i32, r: i32) PackedScore {
     var mg: i32 = 0;
     var eg: i32 = 0;
     switch (t) {
         .pawn => {
-            // A pawn cannot stand on rank 1 or rank 8. Those rows stay zero so a
-            // bug that puts one there reads as a discontinuity, not as a
-            // plausible number.
+            // Unreachable for a pawn; left zero so a bug that puts one there
+            // reads as a discontinuity rather than a plausible number.
             if (r == 0 or r == 7) return pack(0, 0);
             mg = pawn_advance_mg * (r - 1) + pawn_centre_file_mg * axisCentre(f);
             eg = @divTrunc(pawn_advance_eg * (r - 1) * (r - 1), 4);
@@ -399,14 +380,10 @@ fn squareScore(t: PieceType, f: i32, r: i32) PackedScore {
     return pack(mg + piece_value_mg[i], eg + piece_value_eg[i]);
 }
 
-/// Indexed straight by `@intFromEnum(Piece)`, exactly as `zobrist.piece` is and
-/// for the same reason: `put` and `remove` hold a `Piece`, and unpacking it back
-/// into a colour and a type at every call would be work for nothing. The four
-/// unrepresentable codes hold zero.
-///
-/// **Black's rows are the negated, rank-flipped white ones** (`sq ^ 56`), both
-/// resolved at comptime. That is what lets `Board.psqt` be a plain white-relative
-/// running total that no lookup has to reorient.
+/// Indexed straight by `@intFromEnum(Piece)`, for the same reason `zobrist.piece`
+/// is. **Black's rows are the negated, rank-flipped white ones** (`sq ^ 56`),
+/// resolved at comptime — that is what lets `Board.psqt` be a plain
+/// white-relative total no lookup has to reorient.
 pub const piece_square: [16][64]PackedScore = blk: {
     @setEvalBranchQuota(20_000);
     var t: [16][64]PackedScore = @splat(@splat(0));
