@@ -53,9 +53,11 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] MVV-LVA move ordering, in the main search as well as in quiescence
 - [x] SEE, splitting the captures into winning and losing, and not searching the losing ones
       in quiescence
-- [ ] Killer moves
+- [ ] PSQT + tapered evaluation — ahead of the ordering boxes, because a material-only eval
+      gives every quiet move the same score and starves both of them (testlog, 2026-08-16)
+- [ ] Killer moves — written and measured a net loss on `feat/killers`, kept unmerged; retry
+      it against the new eval rather than writing it again
 - [ ] History heuristic
-- [ ] PSQT + tapered evaluation
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
       `position ... moves ...` line would otherwise kill the engine mid-game
