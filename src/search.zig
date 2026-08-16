@@ -1182,8 +1182,17 @@ test "a queen taken at the horizon is no longer counted as won material" {
     const result = s.search(.{ .depth = 1 }, null);
 
     // Two pawns down for Black and nothing given away: the queen keeps its
-    // distance and the score is the material already on the board.
-    try testing.expectEqual(@as(Score, 700), result.score);
+    // distance, so the score is what the position is already worth plus at most
+    // the square the queen improves onto — and nowhere near the extra pawn that
+    // a horizon-blind depth-1 search would claim for Qxd5.
+    //
+    // Stated as a bound off the static score rather than the literal it used to
+    // be: the literal was `queen - two pawns` under a material-only eval, and
+    // pinning a number that PSQT is expected to move would make this a test of
+    // the tuning instead of a test of quiescence.
+    const static = eval.evaluate(&s.b);
+    try testing.expect(result.score >= static);
+    try testing.expect(result.score < static + eval.piece_value_mg[@intFromEnum(board.PieceType.pawn)]);
 
     var buf: [8]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
@@ -1858,11 +1867,19 @@ test "killers are reached by a real search, and it costs fewer nodes for them" {
     // The bound is what this position cost at this depth with the killer band
     // ablated out of the scorer and nothing else changed, so it is one-sided in
     // the same way as the test above: only a search that got worse can breach
-    // it. The margin is 0.25% and that is the finding, not a weak test —
-    // docs/testlog.md, 2026-08-16.
+    // it.
+    //
+    // **Recalibrated when PSQT landed, because the old bound measured a
+    // different engine.** A node count is only comparable against the eval that
+    // produced the tree, so 3,438,106 — the material-only ablation — became
+    // meaningless the moment the leaves started returning different numbers.
+    // Re-measured here: 3,849,447 ablated against 3,799,071 live, a margin of
+    // 1.31% where the material-only eval managed 0.25%. That five-fold jump is
+    // the answer to the question docs/testlog.md, 2026-08-16 parked — killers
+    // were never the problem, the eval they ordered against was.
     const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
-    try testing.expect(s.search(.{ .depth = 7 }, null).nodes < 3_438_106);
+    try testing.expect(s.search(.{ .depth = 7 }, null).nodes < 3_849_447);
 }
 
 test "ordering is applied, and the search costs fewer nodes for it" {

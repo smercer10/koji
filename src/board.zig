@@ -205,6 +205,222 @@ pub const zobrist: Zobrist = blk: {
     break :blk z;
 };
 
+// --- piece-square tables ----------------------------------------------------------
+//
+// What a piece on a square is worth, midgame and endgame, before the search has
+// looked at anything. This lives here and not in `eval.zig` for the same reason
+// the Zobrist keys do: `put`/`remove`/`movePiece` maintain the running total, so
+// the table has to be reachable from where the maintenance happens — and
+// `eval.zig` imports `movegen.zig`, which imports `move.zig`, so a table over
+// there would close an import cycle. board.zig owns the static fact about a
+// piece on a square; eval.zig owns what to do with the total.
+//
+// **The values are koji's own**, generated below from named constants over board
+// geometry. Not a stylistic choice: published tables are published on CPW, CPW is
+// CC BY-SA 3.0, and CREDITS.md commits to linking and paraphrasing it rather than
+// pasting it. Generating them also makes them auditable — each constant is next
+// to the chess fact it claims to encode, which 768 hand-written numbers would not
+// be — and leaves every one of them a ready-made SPSA knob for Phase 5.
+//
+// origin: piece-square tables — Jack Good, "A Five Year Plan for Automatic
+//         Chess", Machine Intelligence 2, Edinburgh University Press, 1968,
+//         the earliest publication CPW identifies on piece-and-square values
+//         via https://www.chessprogramming.org/Piece-Square_Tables
+// origin: tapered evaluation — Hans Berliner, "On the Construction of Evaluation
+//         Functions for Large Domains", IJCAI-79, Tokyo, pp. 53-55, section III
+//         "Smoothness"
+//         via https://bkgm.com/articles/Berliner/EvaluationFunctionsLargeDomains/
+// origin: packing the two scores into one integer so a single add carries both —
+//         unclear (common to many engines by ~2016; no source found credits an
+//         inventor, and CPW's Score page does not describe the trick at all)
+//         via https://minuskelvin.net/chesswiki/content/packed-eval.html
+
+/// A midgame and an endgame score in one `i32`: `(mg << 16) + eg`. One add
+/// accumulates both halves and the table costs 4KB rather than 8KB.
+///
+/// The halves are *not* independent — a negative `eg` borrows out of the low
+/// half — and the `+ 0x8000` in `mgOf` is exactly what repairs that. Addition
+/// and subtraction stay componentwise regardless. Asserted by test rather than
+/// trusted: see "packed scores survive the borrow" below.
+pub const PackedScore = i32;
+
+pub fn pack(mg: i32, eg: i32) PackedScore {
+    return (mg << 16) + eg;
+}
+
+/// Recovers the midgame half. The `+ 0x8000` cancels the borrow a negative
+/// endgame half took out of it.
+pub fn mgOf(s: PackedScore) i32 {
+    return (s + 0x8000) >> 16;
+}
+
+/// Recovers the endgame half — the low 16 bits, read back as signed.
+pub fn egOf(s: PackedScore) i32 {
+    return @as(i16, @truncate(s));
+}
+
+/// Centipawns per piece type before the square is considered. Split by phase:
+/// pawns and rooks are worth more once the board empties, minor pieces slightly
+/// less. The midgame row is the set koji already shipped, unchanged, so this
+/// branch's variable is the tables and the taper rather than a material retune.
+///
+/// Folded into `piece_square` at comptime, so `evaluate` never adds them
+/// separately. Folding is the choice CPW warns about — it contaminates capture
+/// ordering with positional noise if the ordering reads these values — but
+/// nothing here does: `see.zig` deliberately keeps its own copy (see the note
+/// there) and MVV-LVA ranks by piece-type tier, not centipawns. `evaluate` is
+/// the only reader, so the objection does not reach koji.
+pub const piece_value_mg: [6]i32 = .{ 100, 320, 330, 500, 900, 0 };
+pub const piece_value_eg: [6]i32 = .{ 115, 300, 320, 540, 950, 0 };
+
+/// Distance from the centre along one axis, doubled to stay integer:
+/// 7, 5, 3, 1, 1, 3, 5, 7 for coordinates 0..7.
+fn axisDist(x: i32) i32 {
+    return @intCast(@abs(2 * x - 7));
+}
+
+/// The inverse: 0, 2, 4, 6, 6, 4, 2, 0. Higher is nearer the middle.
+fn axisCentre(x: i32) i32 {
+    return 7 - axisDist(x);
+}
+
+/// 0 on a corner, 12 on one of the four centre squares.
+fn centrality(f: i32, r: i32) i32 {
+    return axisCentre(f) + axisCentre(r);
+}
+
+/// Rings inward: 0 on the rim, 3 on the central 2x2.
+fn ring(f: i32, r: i32) i32 {
+    return @min(@min(f, 7 - f), @min(r, 7 - r));
+}
+
+fn onLongDiagonal(f: i32, r: i32) bool {
+    return f == r or f + r == 7;
+}
+
+// The knobs. Every one of these is a chess claim, and the comment on it is the
+// claim rather than a description of the arithmetic.
+
+/// A pawn is worth more the further it has gone, and much more so in an endgame
+/// where the promotion square is reachable — hence the square term on `eg`.
+const pawn_advance_mg = 3;
+const pawn_advance_eg = 11;
+/// Central pawns fight for the centre; rook pawns mostly do not.
+const pawn_centre_file_mg = 4;
+/// A pawn still on d2/e2 has a bishop locked in behind it.
+const pawn_unmoved_centre_mg = -18;
+
+/// A knight is short-range, so its value is dominated by how much board it can
+/// reach — the strongest centrality term of any piece.
+const knight_centre_mg = 5;
+const knight_centre_eg = 4;
+/// "A knight on the rim is dim."
+const knight_rim_mg = -14;
+/// Advanced *and* central: the squares a knight is actually posted on.
+const knight_outpost_mg = 6;
+
+const bishop_centre_mg = 3;
+const bishop_centre_eg = 3;
+/// A bishop's reach is the diagonal it sits on, and the long ones are longest.
+const bishop_long_diagonal_mg = 12;
+const bishop_rim_mg = -8;
+
+/// A rook on the seventh cuts the king off and eats the pawn rank.
+const rook_seventh_mg = 22;
+const rook_seventh_eg = 12;
+/// A weak stand-in for file openness, which a square alone cannot see.
+const rook_centre_file_mg = 4;
+/// Undeveloped, and usually still behind an unmoved rook pawn.
+const rook_corner_mg = -8;
+
+/// Deliberately mild in the midgame: a queen's placement is about tempo, which
+/// is invisible from a square, and a strong term here just makes it wander.
+const queen_centre_mg = 1;
+const queen_centre_eg = 4;
+/// Out early and it gets chased around by developing moves.
+const queen_early_sortie_mg = -9;
+
+/// The king walking up the board in the midgame is how games are lost.
+const king_rank_penalty_mg = -22;
+/// Castled, either wing.
+const king_flank_shelter_mg = 14;
+/// The central files are the ones that open first.
+const king_centre_file_mg = -16;
+/// And in the endgame it is a piece again, and belongs in the middle.
+const king_centre_eg = 6;
+
+/// The generator, in white's orientation with rank 0 as white's back rank.
+fn squareScore(t: PieceType, f: i32, r: i32) PackedScore {
+    var mg: i32 = 0;
+    var eg: i32 = 0;
+    switch (t) {
+        .pawn => {
+            // A pawn cannot stand on rank 1 or rank 8. Those rows stay zero so a
+            // bug that puts one there reads as a discontinuity, not as a
+            // plausible number.
+            if (r == 0 or r == 7) return pack(0, 0);
+            mg = pawn_advance_mg * (r - 1) + pawn_centre_file_mg * axisCentre(f);
+            eg = @divTrunc(pawn_advance_eg * (r - 1) * (r - 1), 4);
+            if (r == 1 and (f == 3 or f == 4)) mg += pawn_unmoved_centre_mg;
+        },
+        .knight => {
+            mg = knight_centre_mg * (centrality(f, r) - 6);
+            eg = knight_centre_eg * (centrality(f, r) - 6);
+            if (ring(f, r) == 0) mg += knight_rim_mg;
+            if (r >= 3 and r <= 5 and ring(f, r) >= 2) mg += knight_outpost_mg;
+        },
+        .bishop => {
+            mg = bishop_centre_mg * (centrality(f, r) - 6);
+            eg = bishop_centre_eg * (centrality(f, r) - 6);
+            if (onLongDiagonal(f, r)) mg += bishop_long_diagonal_mg;
+            if (ring(f, r) == 0) mg += bishop_rim_mg;
+        },
+        .rook => {
+            mg = @divTrunc(rook_centre_file_mg * axisCentre(f), 2);
+            if (r == 6) {
+                mg += rook_seventh_mg;
+                eg += rook_seventh_eg;
+            }
+            if (r == 0 and (f == 0 or f == 7)) mg += rook_corner_mg;
+        },
+        .queen => {
+            mg = queen_centre_mg * (centrality(f, r) - 6);
+            eg = queen_centre_eg * (centrality(f, r) - 6);
+            if (r >= 2 and r <= 4) mg += queen_early_sortie_mg;
+        },
+        .king => {
+            mg = king_rank_penalty_mg * @as(i32, @min(r, 3));
+            eg = king_centre_eg * (centrality(f, r) - 6);
+            if (r == 0 and (f == 1 or f == 2 or f == 6)) mg += king_flank_shelter_mg;
+            if (f == 3 or f == 4) mg += king_centre_file_mg;
+        },
+    }
+    const i = @intFromEnum(t);
+    return pack(mg + piece_value_mg[i], eg + piece_value_eg[i]);
+}
+
+/// Indexed straight by `@intFromEnum(Piece)`, exactly as `zobrist.piece` is and
+/// for the same reason: `put` and `remove` hold a `Piece`, and unpacking it back
+/// into a colour and a type at every call would be work for nothing. The four
+/// unrepresentable codes hold zero.
+///
+/// **Black's rows are the negated, rank-flipped white ones** (`sq ^ 56`), both
+/// resolved at comptime. That is what lets `Board.psqt` be a plain white-relative
+/// running total that no lookup has to reorient.
+pub const piece_square: [16][64]PackedScore = blk: {
+    @setEvalBranchQuota(20_000);
+    var t: [16][64]PackedScore = @splat(@splat(0));
+    for (0..6) |i| {
+        const pt: PieceType = @enumFromInt(i);
+        for (0..64) |sq| {
+            const s = squareScore(pt, @intCast(sq & 7), @intCast(sq >> 3));
+            t[@intFromEnum(Piece.make(.white, pt))][sq] = s;
+            t[@intFromEnum(Piece.make(.black, pt))][sq ^ 56] = -s;
+        }
+    }
+    break :blk t;
+};
+
 // --- board -----------------------------------------------------------------------
 
 pub const Board = struct {
@@ -227,6 +443,15 @@ pub const Board = struct {
     /// without changing what the position is worth, and hashing them would give
     /// the same position a different key at every depth.
     hash: u64 = 0,
+    /// Running `piece_square` total over every piece on the board, **white-
+    /// relative**, maintained by the same three primitives that maintain `hash`.
+    /// `computePsqt` is the independent readout and `consistent()` checks they
+    /// agree, so a Debug build asserts this on every made and unmade move.
+    ///
+    /// Unlike `hash` this needs no entry in `Undo`: it has no state half, only a
+    /// placement half, and unmake's placements are the exact inverse of make's —
+    /// so it unwinds to itself.
+    psqt: PackedScore = 0,
 
     pub const startpos: Board = init: {
         var b: Board = .{ .castling = .all };
@@ -261,6 +486,7 @@ pub const Board = struct {
         b.by_color[@intFromEnum(p.color())] |= sq.bit();
         b.mailbox[@intFromEnum(sq)] = p;
         b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(sq)];
+        b.psqt += piece_square[@intFromEnum(p)][@intFromEnum(sq)];
     }
 
     /// Clears an occupied square and returns what was on it.
@@ -271,6 +497,7 @@ pub const Board = struct {
         b.by_color[@intFromEnum(p.color())] &= ~sq.bit();
         b.mailbox[@intFromEnum(sq)] = .none;
         b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(sq)];
+        b.psqt -= piece_square[@intFromEnum(p)][@intFromEnum(sq)];
         return p;
     }
 
@@ -287,6 +514,8 @@ pub const Board = struct {
         b.mailbox[@intFromEnum(to)] = p;
         b.hash ^= zobrist.piece[@intFromEnum(p)][@intFromEnum(from)] ^
             zobrist.piece[@intFromEnum(p)][@intFromEnum(to)];
+        b.psqt += piece_square[@intFromEnum(p)][@intFromEnum(to)] -
+            piece_square[@intFromEnum(p)][@intFromEnum(from)];
     }
 
     /// The non-placement half of the hash: side, castling rights, en passant.
@@ -312,9 +541,22 @@ pub const Board = struct {
         return h;
     }
 
-    /// The representation invariant: the bitboards are exactly what rebuilding
-    /// them from the mailbox produces. Implies color/type disjointness. This is
-    /// what make/unmake asserts in Debug builds — O(64), so only there.
+    /// Rebuilds the piece-square total from scratch. The independent readout
+    /// that the incrementally maintained `psqt` is checked against, exactly as
+    /// `computeHash` serves `hash`. Nothing on a hot path calls it.
+    pub fn computePsqt(b: *const Board) PackedScore {
+        var s: PackedScore = 0;
+        for (b.mailbox, 0..) |p, i| {
+            if (p == .none) continue;
+            s += piece_square[@intFromEnum(p)][i];
+        }
+        return s;
+    }
+
+    /// The representation invariant: the bitboards and the piece-square total
+    /// are exactly what rebuilding them from the mailbox produces. Implies
+    /// color/type disjointness. This is what make/unmake asserts in Debug
+    /// builds — O(64), so only there.
     pub fn consistent(b: *const Board) bool {
         var by_type: [6]Bitboard = @splat(0);
         var by_color: [2]Bitboard = @splat(0);
@@ -325,7 +567,8 @@ pub const Board = struct {
             by_color[@intFromEnum(p.color())] |= sq_bit;
         }
         return std.mem.eql(Bitboard, &by_type, &b.by_type) and
-            std.mem.eql(Bitboard, &by_color, &b.by_color);
+            std.mem.eql(Bitboard, &by_color, &b.by_color) and
+            b.psqt == b.computePsqt();
     }
 
     /// Debug dump, `{f}`-printable: ranks 8→1 with FEN piece letters, then a
