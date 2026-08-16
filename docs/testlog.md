@@ -536,3 +536,55 @@ implementation site — restating them here is how this file stops being worth r
             Three parked experiments are now worth running, and were not before: the SEE
             ordering-versus-pruning ablation, losing captures ahead of the quiets rather than
             behind them, and the LVA ablation. All three were held back for the same reason.
+
+### 2026-08-16 — History heuristic, with malus
+- branch:   feat/history
+- type:     SPRT
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS**
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +21.12 +/- 9.61 (nElo +28.71 +/- 13.02, LOS 100%)
+- games:    2734 (1084-918-732), Ptnml(0-2) [99, 214, 630, 270, 154]
+- bench:    2679414 (was 3006951)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread, 14 concurrency
+- notes:    The first ordering box to pay at fixed depth. `perf stat -r 5`,
+            `testdata/bench.epd`, 16 positions, depth 6, taken before the SPRT
+            started and with nothing else on the machine:
+
+                                nodes     instructions   insn/node      wall clock
+              main          3,006,951    4,393,935,787        1461   0.40277 s +/- 0.85%
+              history       2,679,414    4,113,841,193        1535   0.38697 s +/- 0.23%
+              change          -10.89%           -6.38%      +5.06%          -3.92%
+
+            5% more work per node — one table read in the quiet branch plus the
+            update at each cutoff — against a tree 10.9% smaller. SEE and killers
+            both cost time-to-depth for their node reduction; this one does not.
+
+            **The ablation is clean in the strong sense, and that is the number
+            worth keeping.** With the history band cut out of the scorer and
+            nothing else changed, bench returns exactly main's 3,006,951 and
+            kiwipete depth 7 returns exactly 3,799,071 — the figure the killers
+            test already carried as its live value. So the wiring is provably
+            behaviour-neutral when the table is zero, and the whole delta is the
+            ordering rather than an incidental change to the tree.
+
+            **Elo per node is much worse than PSQT's, as expected.** +676 came
+            from an engine that could not tell two quiet moves apart; +21 is what
+            a real ordering improvement is worth on top of a working evaluation.
+            This is the first number on this branch that sets a usable bar for
+            what a future ordering change has to beat.
+
+            Kiwipete depth 7 moved only 3,799,071 -> 3,789,513, a 0.25% node
+            reduction against bench's 10.89%. One position at one depth is not
+            evidence against the other measurement, but it is a reminder that the
+            search test's bound is a regression guard and not a result.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same
+            2,679,414.
+
+            Three constants (`history_max`, `history_slope`, `history_bonus_max`)
+            were picked, not tuned, and no variant was tried — the sources are
+            explicit that nobody can justify a particular set. Nothing here says
+            these are good values, only that they beat having none.
