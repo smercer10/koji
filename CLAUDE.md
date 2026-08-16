@@ -38,7 +38,9 @@ older AMD, so detect it and keep both PEXT and plain magics rather than compilin
 ## Invariants
 - `bench` is deterministic across runs **and machines** — identical node counts on AVX2 and non-AVX2
   builds. Keep every eval path integer; float accumulation reorders with SIMD width.
-- Every commit touching search or eval carries `Bench: <nodes>` in its message.
+- Every commit touching search or eval carries `Bench: <nodes>` in its message. **The squash body is
+  the PR description, so the trailer has to be the PR's last line** — one in the branch commit is
+  discarded at merge, and CI only sees the result, on `main`, where fixing it needs a force-push.
 - An illegal PV move is never cosmetic. It is a TT-collision bug — fix it immediately.
 - A release build advertises only real UCI options. `Hash` and `Threads` are mandatory.
 
