@@ -246,10 +246,12 @@ pub fn egOf(s: PackedScore) i32 {
     return @as(i16, @truncate(s));
 }
 
-/// Folded into `piece_square` at comptime. Safe to fold only because nothing
-/// but `evaluate` reads them: `see.zig` keeps its own copy (see the note there)
-/// and MVV-LVA ranks by piece-type tier. **Give a second reader these values and
-/// capture ordering inherits positional noise** — that is what folding costs.
+/// Folded into `piece_square` by `squareScore` at comptime, so no run-time path
+/// adds them: what is left here is a scale for tests to assert against. Safe to
+/// fold only because move ordering does not read them — `see.zig` keeps its own
+/// copy (see the note there) and MVV-LVA ranks by piece-type tier. **Order
+/// captures by these and the ordering inherits positional noise**, which is the
+/// one cost folding has.
 pub const piece_value_mg: [6]i32 = .{ 100, 320, 330, 500, 900, 0 };
 pub const piece_value_eg: [6]i32 = .{ 115, 300, 320, 540, 950, 0 };
 
