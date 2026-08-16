@@ -258,6 +258,13 @@ pub const Searcher = struct {
     /// straight to the target depth rather than more expensive.
     root_best: ?Move,
 
+    /// Two quiet moves per ply that caused a beta cutoff there, tried early at
+    /// the *other* nodes of the same ply. Indexed by ply and never by remaining
+    /// depth: extensions and reductions move a node's depth around, so depth
+    /// aliases unrelated positions into one slot, while ply is a fixed distance
+    /// from the root and so keeps a consistent side to move.
+    killers: [max_ply][2]Move,
+
     nodes: u64,
     limits: Limits,
     start: Io.Timestamp,
@@ -417,6 +424,13 @@ pub const Searcher = struct {
         s.setDeadlines(limits);
         s.nodes = 0;
         s.root_best = null;
+        // Kept across the iterations of *this* search — a killer found at depth
+        // 5 is the reason depth 6 is cheap, exactly as `root_best` is — and
+        // dropped between searches, where ply N is a different position two
+        // moves on. It is also what keeps `bench` a sum of independent numbers:
+        // one `Searcher` runs all sixteen positions, and killers surviving into
+        // the next one would make the total a fact about the file's order.
+        s.killers = @splat(no_killers);
         // Private to this thread, unlike `stop_flag`, so resetting it here is
         // safe and keeps a previous search's abort from poisoning this one.
         s.stopped = false;
@@ -537,7 +551,7 @@ pub const Searcher = struct {
         // The root falls back to its own previous best only when its entry has
         // been evicted, which a small table under a long game does do.
         const first: ?Move = tt_move orelse if (ply == 0) s.root_best else null;
-        o.score(&s.b, first);
+        o.score(&s.b, first, s.killers[ply]);
 
         var best = -infinity;
         // Every stored entry carries a move, including a fail-low node's: the
@@ -575,7 +589,10 @@ pub const Searcher = struct {
                 // not merely that the window was exceeded, which is what makes
                 // the bound stored below a true statement about the position
                 // rather than one about this node's window.
-                if (alpha >= beta) break;
+                if (alpha >= beta) {
+                    s.storeKiller(ply, m);
+                    break;
+                }
             }
         }
 
@@ -590,6 +607,24 @@ pub const Searcher = struct {
         s.tt.store(s.b.hash, best_move, scoreToTt(best, ply), @intCast(depth), bound);
 
         return best;
+    }
+
+    /// Remembers the quiet move that just caused a beta cutoff, so the other
+    /// nodes at this ply try it early.
+    ///
+    /// **Quiets only.** A capture is already ranked by what it takes, so storing
+    /// one spends a slot without adding an ordering — and spends it by evicting
+    /// the quiet the slot exists to find.
+    ///
+    /// **The two slots must hold different moves.** Without the first test a
+    /// move that cuts off twice at the same ply fills both with itself, and the
+    /// second slot stops being a second guess.
+    fn storeKiller(s: *Searcher, ply: u32, m: Move) void {
+        if (m.kind.isCapture() or m.kind.isPromotion()) return;
+        const k = &s.killers[ply];
+        if (@as(u16, @bitCast(m)) == @as(u16, @bitCast(k[0]))) return;
+        k[1] = k[0];
+        k[0] = m;
     }
 
     /// Searches on past the horizon until nothing is hanging, so `evaluate` is
@@ -649,7 +684,14 @@ pub const Searcher = struct {
         // Scored below the stand-pat cutoff, so a node that stands pat never
         // pays for an ordering it does not use. Nothing outranks the captures
         // here: quiescence does not probe the table, so there is no first move.
-        o.score(&s.b, null);
+        //
+        // **No killers either.** They are a main-search device — no published
+        // description uses them here, and this list is captures and promotions,
+        // which a killer slot never holds. The one exception is an in-check node,
+        // where `generateNoisy` hands back full evasions: those quiets would be
+        // rankable, but the killers at this ply were learned by a search with a
+        // depth left to spend, and nothing says they transfer to one without.
+        o.score(&s.b, null, no_killers);
 
         for (0..o.list.len) |i| {
             const m = o.next(i);
@@ -749,14 +791,20 @@ fn scoreFromTt(score: i16, ply: u32) Score {
 //         as what engines do, credits no one, and records that many place the
 //         losing captures ahead of the quiets instead)
 //         via https://www.chessprogramming.org/Move_Ordering
+// origin: killer moves — Barbara J. Huberman, "A Program to Play Chess End
+//         Games", Stanford CS-106 / SAIL AI-65, 1968, is the earliest documented
+//         description; Selim Akl and Monroe Newborn, "The Principal Continuation
+//         and the Killer Heuristic", ACM 1977, named and formalised it. CPW
+//         lists both alongside Gillogly 1971 and singles out no inventor.
+//         via https://www.chessprogramming.org/Killer_Heuristic
 
 /// Number of piece types, and so the spacing between victim tiers below.
 const tier: Score = 6;
 
 /// The ordering move outranks everything, a capture or promotion that does not
-/// lose material outranks every quiet, quiets sit at zero — the band killers and
-/// history will fill — and a capture SEE says loses material sits below all of
-/// it. These are ranks and not centipawns: they are only ever compared with each
+/// lose material outranks every quiet, the two killers sit above the quiets that
+/// remain at zero, and a capture SEE says loses material sits below all of it.
+/// These are ranks and not centipawns: they are only ever compared with each
 /// other, never mixed with or returned as a search score.
 ///
 /// The MVV-LVA term added to a band spans 59, so no capture can be pushed out of
@@ -765,12 +813,20 @@ const tier: Score = 6;
 /// **A losing capture sitting last is the mainstream choice, not the only one.**
 /// CPW records that many engines place them ahead of the quiets instead, on the
 /// grounds that a capture is tactically loaded even when SEE calls it losing —
-/// and koji's quiet band is entirely unordered zeros until killers and history
-/// land, so "last" here means behind thirty arbitrary moves. It is on the
-/// candidate list as its own test.
+/// and koji's quiet band is unordered zeros until history lands, so "last" here
+/// means behind thirty arbitrary moves. It is on the candidate list as its own
+/// test. Killers-above-losing-captures is the CPW-majority layout and is just as
+/// unsettled: CPW records both that placement and killers below every capture.
 const first_score: Score = 1 << 20;
 const noisy_score: Score = 1 << 16;
+const killer_score: Score = 1 << 14;
 const losing_score: Score = -(1 << 16);
+
+/// An empty killer slot. No generated move has `from == to`, so this matches
+/// nothing — the same property that lets `Ordered.score` compare against an
+/// absent ordering move without branching on whether there is one.
+const no_killer: Move = .init(.a1, .a1, .quiet);
+const no_killers: [2]Move = @splat(no_killer);
 
 /// What gets looked at first. Captures rank by victim, and within a victim by
 /// how cheap the attacker is.
@@ -782,9 +838,21 @@ const losing_score: Score = -(1 << 16);
 /// there is only one attacker to choose between. Kept because this box is named
 /// for it and it costs one mailbox read; do not defend it as load-bearing.
 /// via https://github.com/official-stockfish/Stockfish/pull/340
-fn scoreMove(b: *const Board, m: Move) Score {
+///
+/// **Killers are tested on the quiet early-out, not beside it.** The question
+/// "is this quiet" is asked once and answered for both, so a capture — every
+/// move quiescence scores — never pays for a comparison that cannot match.
+fn scoreMove(b: *const Board, m: Move, killers: [2]Move) Score {
     const kind = m.kind;
-    if (!kind.isCapture() and !kind.isPromotion()) return 0;
+    if (!kind.isCapture() and !kind.isPromotion()) {
+        // Promotions are excluded by falling outside this branch rather than by
+        // a test of their own: a queen promotion already sits with the queen
+        // captures, which is above where a killer would put it.
+        const bits: u16 = @bitCast(m);
+        if (bits == @as(u16, @bitCast(killers[0]))) return killer_score;
+        if (bits == @as(u16, @bitCast(killers[1]))) return killer_score - 1;
+        return 0;
+    }
 
     // A promotion ranks by what it makes on the same scale a capture ranks by
     // what it takes, so a queen promotion sits with the queen captures. A
@@ -829,12 +897,17 @@ const Ordered = struct {
     /// Scores every generated move. `first` — the table's move, or the root's
     /// previous best — outranks all of them. It is scored where it lies rather
     /// than lifted out of the list, so it is still searched exactly once.
-    fn score(o: *Ordered, b: *const Board, first: ?Move) void {
+    ///
+    /// One pass assigns exactly one score to each move, so the bands cannot
+    /// overlap: a table move that is also this ply's killer scores `first_score`
+    /// and is searched once, not once per band it belongs to. That is the
+    /// failure other engines report from ordering in separate stages.
+    fn score(o: *Ordered, b: *const Board, first: ?Move, killers: [2]Move) void {
         // No generated move has `from == to`, so an all-zero key matches nothing
         // and the absent case costs no branch of its own.
         const key: u16 = if (first) |m| @bitCast(m) else 0;
         for (o.list.slice(), 0..) |m, i| {
-            o.scores[i] = if (@as(u16, @bitCast(m)) == key) first_score else scoreMove(b, m);
+            o.scores[i] = if (@as(u16, @bitCast(m)) == key) first_score else scoreMove(b, m, killers);
         }
     }
 
@@ -1531,7 +1604,7 @@ test "ordering hands every move back exactly once, best first" {
 
         // The *last* generated move as the ordering move, so the path that
         // lifts one out of the far end of the list runs rather than a no-op.
-        o.score(&s.b, o.list.moves[len - 1]);
+        o.score(&s.b, o.list.moves[len - 1], no_killers);
 
         var previous: Score = first_score;
         for (0..len) |i| {
@@ -1573,7 +1646,7 @@ test "MVV-LVA takes the biggest victim, and then the cheapest attacker" {
 
         var o: Ordered = undefined;
         movegen.generate(&s.b, &o.list);
-        o.score(&s.b, null);
+        o.score(&s.b, null, no_killers);
 
         const want = move.Move.fromUci(&s.b, case.want).?;
         try testing.expectEqual(@as(u16, @bitCast(want)), @as(u16, @bitCast(o.next(0))));
@@ -1598,7 +1671,7 @@ test "en passant is scored as the pawn it takes, not as the empty square it land
     defer testing.allocator.destroy(ep);
     var eo: Ordered = undefined;
     movegen.generate(&ep.b, &eo.list);
-    eo.score(&ep.b, null);
+    eo.score(&ep.b, null, no_killers);
 
     // The same pawn taking the same pawn on the same square, arrived at
     // normally: en passant has to score identically to it.
@@ -1606,7 +1679,7 @@ test "en passant is scored as the pawn it takes, not as the empty square it land
     defer testing.allocator.destroy(plain);
     var po: Ordered = undefined;
     movegen.generate(&plain.b, &po.list);
-    po.score(&plain.b, null);
+    po.score(&plain.b, null, no_killers);
 
     const by_rule = scoreOfUci(&eo, &ep.b, "e5d6").?;
     try testing.expectEqual(scoreOfUci(&po, &plain.b, "e5d6").?, by_rule);
@@ -1622,7 +1695,7 @@ test "a capturing promotion collects both terms" {
 
     var o: Ordered = undefined;
     movegen.generate(&s.b, &o.list);
-    o.score(&s.b, null);
+    o.score(&s.b, null, no_killers);
 
     const taking = scoreOfUci(&o, &s.b, "e7d8q").?;
     const quiet_promo = scoreOfUci(&o, &s.b, "e7e8q").?;
@@ -1645,18 +1718,18 @@ test "the ordering move goes first, and one that is not in the list changes noth
     var o: Ordered = undefined;
     movegen.generate(&s.b, &o.list);
     const quiet = move.Move.fromUci(&s.b, "a1b1").?;
-    o.score(&s.b, quiet);
+    o.score(&s.b, quiet, no_killers);
     try testing.expectEqual(@as(u16, @bitCast(quiet)), @as(u16, @bitCast(o.next(0))));
 
     // A move from an unrelated position, which is what a table collision hands
     // back: it must simply not be found, leaving the order it would have had.
     var collided: Ordered = undefined;
     movegen.generate(&s.b, &collided.list);
-    collided.score(&s.b, move.Move.init(.a4, .a5, .quiet));
+    collided.score(&s.b, move.Move.init(.a4, .a5, .quiet), no_killers);
 
     var plain: Ordered = undefined;
     movegen.generate(&s.b, &plain.list);
-    plain.score(&s.b, null);
+    plain.score(&s.b, null, no_killers);
 
     for (0..plain.list.len) |i| {
         try testing.expectEqual(
@@ -1664,6 +1737,132 @@ test "the ordering move goes first, and one that is not in the list changes noth
             @as(u16, @bitCast(collided.next(i))),
         );
     }
+}
+
+const kiwipete = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
+test "a killer outranks every other quiet, and still ranks behind the captures" {
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+
+    // Castling, so this covers the one quiet move whose `kind` is neither
+    // `.quiet` nor a capture — nothing excludes it, and nothing should.
+    const killer = move.Move.fromUci(&s.b, "e1g1").?;
+
+    var o: Ordered = undefined;
+    movegen.generate(&s.b, &o.list);
+    o.score(&s.b, null, .{ killer, no_killer });
+
+    try testing.expectEqual(killer_score, scoreOfUci(&o, &s.b, "e1g1").?);
+    // Bishop takes bishop: an equal trade, so SEE leaves it in the top band and
+    // the killer has to stay under it.
+    try testing.expect(scoreOfUci(&o, &s.b, "e2a6").? > killer_score);
+
+    // ...and every quiet that is not the killer is still an unranked zero.
+    for (o.list.slice(), 0..) |m, i| {
+        if (@as(u16, @bitCast(m)) == @as(u16, @bitCast(killer))) continue;
+        if (m.kind.isCapture() or m.kind.isPromotion()) continue;
+        try testing.expectEqual(@as(Score, 0), o.scores[i]);
+    }
+}
+
+test "the second killer ranks behind the first, and both ahead of the quiets" {
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+
+    const primary = move.Move.fromUci(&s.b, "a1b1").?;
+    const secondary = move.Move.fromUci(&s.b, "h1g1").?;
+
+    var o: Ordered = undefined;
+    movegen.generate(&s.b, &o.list);
+    o.score(&s.b, null, .{ primary, secondary });
+
+    const first = scoreOfUci(&o, &s.b, "a1b1").?;
+    const second = scoreOfUci(&o, &s.b, "h1g1").?;
+    try testing.expectEqual(killer_score, first);
+    try testing.expect(second < first);
+    // The gap is one rank, so no quiet can ever be spelled between them.
+    try testing.expectEqual(@as(Score, 1), first - second);
+    try testing.expect(second > 0);
+}
+
+test "storing shifts the slots down and never fills both with one move" {
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+    s.killers = @splat(no_killers);
+
+    const a = move.Move.fromUci(&s.b, "a1b1").?;
+    const b = move.Move.fromUci(&s.b, "h1g1").?;
+
+    s.storeKiller(3, a);
+    try testing.expectEqual(@as(u16, @bitCast(a)), @as(u16, @bitCast(s.killers[3][0])));
+
+    s.storeKiller(3, b);
+    try testing.expectEqual(@as(u16, @bitCast(b)), @as(u16, @bitCast(s.killers[3][0])));
+    try testing.expectEqual(@as(u16, @bitCast(a)), @as(u16, @bitCast(s.killers[3][1])));
+
+    // The same move cutting off twice must not evict the second guess with a
+    // copy of the first — that is what makes the second slot dead.
+    s.storeKiller(3, b);
+    try testing.expectEqual(@as(u16, @bitCast(b)), @as(u16, @bitCast(s.killers[3][0])));
+    try testing.expectEqual(@as(u16, @bitCast(a)), @as(u16, @bitCast(s.killers[3][1])));
+
+    // One ply's slots are its own.
+    try testing.expectEqual(@as(u16, @bitCast(no_killer)), @as(u16, @bitCast(s.killers[4][0])));
+}
+
+test "a capture or a promotion never becomes a killer" {
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+    s.killers = @splat(no_killers);
+
+    s.storeKiller(0, move.Move.fromUci(&s.b, "e2a6").?);
+    try testing.expectEqual(@as(u16, @bitCast(no_killer)), @as(u16, @bitCast(s.killers[0][0])));
+
+    const p = try searcher("3r2k1/4P3/8/8/8/8/8/4K3 w - - 0 1");
+    defer testing.allocator.destroy(p);
+    p.killers = @splat(no_killers);
+
+    // Both halves: the quiet promotion and the capturing one. Neither is a
+    // capture-flagged quiet, and neither may take a slot.
+    p.storeKiller(0, move.Move.fromUci(&p.b, "e7e8q").?);
+    p.storeKiller(0, move.Move.fromUci(&p.b, "e7d8q").?);
+    try testing.expectEqual(@as(u16, @bitCast(no_killer)), @as(u16, @bitCast(p.killers[0][0])));
+}
+
+test "a killer that is not legal here changes the order not at all" {
+    // A killer is learned at a sibling node, so most of them do not exist in
+    // this position. Nothing verifies one before it is used: it is a `u16`
+    // compared against moves `generate` has already emitted, so an absent
+    // killer simply matches nothing — the same guarantee the ordering move has.
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+
+    var stale: Ordered = undefined;
+    movegen.generate(&s.b, &stale.list);
+    stale.score(&s.b, null, .{ move.Move.init(.a4, .a5, .quiet), move.Move.init(.b7, .b6, .quiet) });
+
+    var plain: Ordered = undefined;
+    movegen.generate(&s.b, &plain.list);
+    plain.score(&s.b, null, no_killers);
+
+    for (0..plain.list.len) |i| {
+        try testing.expectEqual(
+            @as(u16, @bitCast(plain.next(i))),
+            @as(u16, @bitCast(stale.next(i))),
+        );
+    }
+}
+
+test "killers are reached by a real search, and it costs fewer nodes for them" {
+    // The bound is what this position cost at this depth with the killer band
+    // ablated out of the scorer and nothing else changed, so it is one-sided in
+    // the same way as the test above: only a search that got worse can breach
+    // it. The margin is 0.25% and that is the finding, not a weak test —
+    // docs/testlog.md, 2026-08-16.
+    const s = try searcher(kiwipete);
+    defer testing.allocator.destroy(s);
+    try testing.expect(s.search(.{ .depth = 7 }, null).nodes < 3_438_106);
 }
 
 test "ordering is applied, and the search costs fewer nodes for it" {
