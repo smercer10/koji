@@ -250,6 +250,16 @@ Two rules:
 > *unclear (folklore; CPW states it as what engines "usually" do and credits no one)* via
 > https://www.chessprogramming.org/Move_Ordering
 
+> **killer moves** — origin: *Barbara J. Huberman, "A Program to Play Chess End Games", Stanford
+> CS-106 / SAIL AI-65, 1968*, the earliest documented description; *Selim G. Akl and Monroe M.
+> Newborn, "The Principal Continuation and the Killer Heuristic", Proceedings of the 1977 ACM
+> Annual Conference, pp. 466–473* named the heuristic and tied it to alpha-beta search, via
+> https://dl.acm.org/doi/10.1145/800179.810240 — CPW lists both alongside Gillogly 1971 and
+> singles out no inventor, so neither is claimed here as *the* origin.
+> via https://www.chessprogramming.org/Killer_Heuristic — trail: *ubiquitous in alpha-beta engines
+> by the 1980s; no first shipping engine is identifiable*. Measured a net loss in koji and not
+> merged (docs/testlog.md, 2026-08-16); the entry stands because the implementation does.
+
 > **soft and hard time limits** — origin: *unclear (folklore; CPW presents the two-threshold scheme
 > as an "enhancement" over a single deadline and names no originator)* via
 > https://www.chessprogramming.org/Time_Management — the companion rule for spending the soft limit,

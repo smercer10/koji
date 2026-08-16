@@ -429,3 +429,54 @@ implementation site — restating them here is how this file stops being worth r
             that would decide it are not in place yet: quiescence carries the tactics
             in a material-only eval, and the quiet band it ranks against is unordered
             until killers and history land. Re-run once those and PSQT exist.
+
+### 2026-08-16 — Killer moves: correct, and a time-to-depth regression at this eval
+- branch:   feat/killers
+- type:     bench
+- result:   **FAIL** — -1.30% nodes bought at +2.01% wall clock. No SPRT run.
+- bench:    2159832 (was 2188249)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread
+- notes:    Two slots per ply, stored on a beta cutoff by a quiet move, ranked between
+            the winning captures and the quiet band. `testdata/bench.epd`, 16 positions,
+            depth 6, table cleared between positions, `perf stat -r 5`:
+
+                                            nodes    instructions      wall clock
+              main                      2,188,249   3,209,274,976   0.29694 s +/- 0.59%
+              killer compares only      2,188,249   3,249,659,119   0.30137 s +/- 0.80%
+              killers live              2,159,832   3,268,091,863   0.30290 s +/- 0.40%
+
+            The middle row is the ablation that decides it: the killer band left in the
+            scorer with the slots never filled, so the two comparisons per quiet move are
+            paid and nothing can match. **They cost +1.49% wall clock on their own — more
+            than the entire 1.30% node win the filled slots then buy.** The mechanism is
+            not merely unprofitable, it is underwater before it does anything.
+
+            Isolated, no table, Kiwipete, killer band ablated against live:
+
+                        depth 5        depth 6         depth 7
+              off      134,925        760,786       3,438,106
+              on       134,892        760,454       3,429,345
+              change     -0.02%         -0.04%          -0.25%
+
+            **The cause is the evaluation, not the implementation.** `evaluate` is material
+            only, so every quiet move at a node returns the same static score and a fail-high
+            has to come from a tactic — which means from a capture. Killers order the quiet
+            band; at this eval that band almost never produces the cutoff, so there is nearly
+            nothing for them to be right about. Instrumenting cutoffs agreed directionally
+            (quiet moves cause a low single-digit percentage of cutoffs, and a killer causes
+            almost every one of those) but the per-depth counters were not self-consistent
+            and are not quoted as a result here.
+
+            Not a defect hunt: the mechanism is checked by five unit tests — band placement
+            against captures and quiets, the second slot one rank under the first, the shift
+            and its duplicate guard, captures and promotions refused a slot, and a killer
+            illegal in the position changing the order not at all. Those and the ordering
+            code stay on the branch.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same 2,159,832.
+
+            **Re-run after PSQT + tapered evaluation, not before.** This is the same finding
+            the SEE entry ends on one box earlier, now with an ablation under it: two ordering
+            boxes in a row have returned nearly nothing because the thing they order is
+            invisible to a material-only eval. The roadmap orders killers and history ahead
+            of PSQT; this result argues that order is backwards.
