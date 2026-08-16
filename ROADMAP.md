@@ -54,7 +54,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 - [x] SEE, splitting the captures into winning and losing, and not searching the losing ones
       in quiescence
 - [x] Killer moves
-- [ ] PSQT + tapered evaluation
+- [x] PSQT + tapered evaluation
 - [ ] History heuristic
 - [ ] Apply `setoption` — `Hash` and `Threads` are advertised but currently inert
 - [x] Grow the stdin buffer past 8192 bytes, or handle `StreamTooLong`. A long
