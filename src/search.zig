@@ -105,6 +105,35 @@ const game_history = 256;
 /// and `bench` stays deterministic. Power of two: the check is a mask.
 const check_interval = 2048;
 
+/// Null-move pruning: the depth at which a pass is worth trying at all, and how
+/// much depth the pass gives up.
+///
+/// **Both are arbitrary, and the published record does not agree on them.** CPW
+/// gives "a fixed reduction of 3 or 4" as the baseline; Fruit shipped a fixed 3;
+/// the widely-copied Mediocre guide argues 3 already misses tactics and 2 is
+/// right; the depth-scaled forms in circulation differ again and the one paper
+/// that formalised scaling (Heinz 1999) is paywalled, so its constants could not
+/// be read. What every source does share is the *shape* — a base in the low
+/// single digits, growing slowly with depth — so that is what is written here,
+/// at the conservative end of the range. These are SPSA's to move in Phase 5,
+/// not a place to swap in another engine's number.
+const nmp_min_depth: i32 = 3;
+
+fn nullReduction(depth: i32) i32 {
+    return 2 + @divTrunc(depth, 6);
+}
+
+/// Whether the side to move has a piece: anything that is neither a pawn nor the
+/// king. This is the zugzwang guard, and the only guard on the pruning below
+/// whose absence costs games rather than nodes — with pawns alone, "passing
+/// cannot be better than moving" stops being true, and pawn endgames are exactly
+/// where being wrong about it decides the result.
+fn hasNonPawnMaterial(b: *const Board) bool {
+    const pawns = b.by_type[@intFromEnum(board.PieceType.pawn)];
+    const kings = b.by_type[@intFromEnum(board.PieceType.king)];
+    return b.by_color[@intFromEnum(b.side)] & ~(pawns | kings) != 0;
+}
+
 /// A move's share of the clock, in milliseconds.
 ///
 /// Two limits rather than one. The basic published allocation is a single
@@ -261,6 +290,12 @@ pub const Searcher = struct {
     history_len: usize,
     /// Where the game ends and the search began, so a search can rewind to it.
     root_history_len: usize,
+    /// The oldest entry a repetition scan may reach. Zero everywhere except
+    /// below a null move, which raises it to cut the line in two — see
+    /// `repeated` for what it is protecting and `negamax` for why a pass is the
+    /// one move that needs it. Saved and restored by the block that raises it,
+    /// so it is back at zero by the end of every search, which `search` asserts.
+    repetition_floor: usize,
 
     /// Triangular PV table: `pv[ply][0..pv_len[ply]]` is the best line found
     /// from `ply` down. One row longer than `max_ply` because the node at
@@ -348,6 +383,7 @@ pub const Searcher = struct {
         s.history[0] = b.hash;
         s.history_len = 1;
         s.root_history_len = 1;
+        s.repetition_floor = 0;
     }
 
     /// Plays one move of the *game* (not of the search), keeping the history
@@ -366,7 +402,14 @@ pub const Searcher = struct {
             const keep = s.history.len - 1;
             std.mem.copyForwards(u64, s.history[0..keep], s.history[1..]);
             s.history_len = keep;
+            // Every index into `history` moves down with the shift. Both of
+            // these are absolute indices, so both have to follow it — a
+            // `repetition_floor` left behind sits one entry too high, and once
+            // the buffer is permanently at capacity it stops moving at all while
+            // `history_len` does not, which silently disables repetition
+            // detection inside every null-move subtree.
             s.root_history_len -|= 1;
+            s.repetition_floor -|= 1;
         }
         s.history[s.history_len] = s.b.hash;
         s.history_len += 1;
@@ -382,7 +425,13 @@ pub const Searcher = struct {
         // Only positions since the last irreversible move can possibly match: a
         // capture or a pawn move makes everything before it unreachable.
         // `halfmove` counts exactly those plies and so bounds the scan.
-        const reachable = @min(s.history_len - 1, @as(usize, s.b.halfmove));
+        //
+        // `repetition_floor` bounds it a second way, and a null move is the only
+        // thing that ever raises it. Saturating because the floor is the *next*
+        // index to be written the moment a pass is made, so until something
+        // below it is pushed there is nothing in range at all.
+        const in_line = (s.history_len - 1) -| s.repetition_floor;
+        const reachable = @min(in_line, @as(usize, s.b.halfmove));
         // Same side to move only recurs at an even distance back.
         var back: usize = 2;
         while (back <= reachable) : (back += 2) {
@@ -510,7 +559,7 @@ pub const Searcher = struct {
         const target = @min(limits.depth, max_ply);
         var depth: u8 = 1;
         while (depth <= target) : (depth += 1) {
-            const score = s.negamax(depth, 0, -infinity, infinity);
+            const score = s.negamax(true, depth, 0, -infinity, infinity, true);
             if (s.stopped) break;
 
             assert(s.pv_len[0] > 0);
@@ -548,10 +597,30 @@ pub const Searcher = struct {
 
         result.nodes = s.nodes;
         assert(s.history_len == s.root_history_len);
+        // A leaked floor would under-detect repetitions in the next search, in
+        // silence. Every pass restores it, including ones unwound by an abort.
+        assert(s.repetition_floor == 0);
         return result;
     }
 
-    fn negamax(s: *Searcher, depth: i32, ply: u32, alpha_in: Score, beta: Score) Score {
+    /// `prune` is comptime and `true` everywhere the engine actually searches.
+    /// Null-move pruning below is **unsound** by design, and three tests at the
+    /// bottom of this file assert that alpha-beta returns what an unpruned
+    /// reference returns, or an honest bound — claims still true of alpha-beta,
+    /// so they run with `prune` false, exactly as they already run against a
+    /// disabled table. Comptime, so the unpruned instantiation is reachable only
+    /// from those tests and never exists in a release build.
+    ///
+    /// `can_null` is runtime: `false` only in the child of a pass.
+    fn negamax(
+        s: *Searcher,
+        comptime prune: bool,
+        depth: i32,
+        ply: u32,
+        alpha_in: Score,
+        beta: Score,
+        can_null: bool,
+    ) Score {
         s.pv_len[ply] = 0;
         s.nodes += 1;
 
@@ -616,6 +685,76 @@ pub const Searcher = struct {
             }
         }
 
+        // Null-move pruning: hand the opponent a free move, and if they still
+        // cannot reach beta with a whole extra tempo, do not search this node.
+        // It rests on passing never being better than the best real move, which
+        // is false in zugzwang and nowhere else that matters.
+        //
+        // Each guard, and what removing it costs:
+        //   - `can_null`: two passes running are this position `2R + 2` plies
+        //     shallower with both tempi cancelling — no new information.
+        //   - `ply > 0`: the root owes a move and a variation, not a bound.
+        //   - `depth`: below the reduction there is no depth left to give up.
+        //   - material: zugzwang, documented at `hasNonPawnMaterial`.
+        //   - `inCheck`: a side in check cannot pass, and the search below such
+        //     a pass would be free to capture the king. Asked **last**: it is an
+        //     `attackersTo` over the whole army, and every test before it is
+        //     integer work that can short-circuit it away.
+        //
+        // **No PV-node guard, and adding the usual one would disable this
+        // entirely.** It reads "only at zero-window nodes", and koji has neither
+        // PVS nor aspiration windows, so every node here has a full window. It
+        // becomes meaningful when PVS lands.
+        //
+        // origin: the null-move observation — Gordon Goetsch and Murray
+        //         Campbell, AAAI Spring Symposium 1988, with independent
+        //         contemporaneous work by Don Beal, 1989
+        //         via https://www.chessprogramming.org/Null_Move_Observation
+        // origin: the recursive pruning form, and scaling the reduction with
+        //         depth — Chrilly Donninger, ICCA Journal 16(3), 1993
+        //         via https://www.chessprogramming.org/Null_Move_Pruning
+        // origin: the non-pawn-material zugzwang guard — unclear (folklore; CPW
+        //         names only engines that inherited it)
+        //         via https://www.chessprogramming.org/Zugzwang
+        // origin: refusing to propagate a mate score out of a null search —
+        //         "Kickstone" and H.G. Muller, open-chess "Fail Soft best
+        //         practices" via https://open-chess.org/viewtopic.php?t=3180
+        if (prune and can_null and ply > 0 and depth >= nmp_min_depth and
+            hasNonPawnMaterial(&s.b) and !movegen.inCheck(&s.b))
+        {
+            const undo = move.makeNull(&s.b);
+
+            // **A pass cuts the line in two, and not pushing it is not enough.**
+            // The plies below then sit at the wrong parity, and `repeated`,
+            // which matches at even distances, reads straight through the gap:
+            // `pass, Nf3, pass, Ng1` puts the starting position two *pushed*
+            // entries back and scores it a draw, through a line no game can
+            // play. The floor is what makes positions above the pass
+            // unreachable from below it; repetitions wholly inside the subtree
+            // still alternate correctly and are still found.
+            const floor = s.repetition_floor;
+            s.repetition_floor = s.history_len;
+
+            const reduced = depth - 1 - nullReduction(depth);
+            const score = -s.negamax(prune, reduced, ply + 1, -beta, -beta + 1, false);
+
+            s.repetition_floor = floor;
+            move.unmakeNull(&s.b, undo);
+
+            if (s.stopped) return 0;
+            if (score >= beta) {
+                // A mate the opponent could not escape *after a free move* is
+                // not a mate here, and returning one would put a score no real
+                // line supports into the parent's table entry. Beta is still an
+                // honest bound.
+                //
+                // Nothing is stored, and `pv_len[ply]` stays at the 0 set on
+                // entry: an entry has to carry a move and a line has to name
+                // one, which is the rule the mate and stalemate return states.
+                return if (score >= mate_threshold) beta else score;
+            }
+        }
+
         var o: Ordered = undefined;
         movegen.generate(&s.b, &o.list);
         if (o.list.len == 0) {
@@ -646,7 +785,7 @@ pub const Searcher = struct {
             const undo = move.makeMove(&s.b, m);
             s.pushHistory();
 
-            const score = -s.negamax(depth - 1, ply + 1, -beta, -alpha);
+            const score = -s.negamax(prune, depth - 1, ply + 1, -beta, -alpha, true);
 
             s.history_len -= 1;
             move.unmakeMove(&s.b, m, undo);
@@ -1285,12 +1424,15 @@ test "alpha-beta returns exactly the score minimax does" {
     // that claims more than it proved shows up here as a mismatch, on a fixed
     // tree, deterministically. Alpha-beta is only allowed to be faster.
     //
-    // **It runs with the table off, and has to.** A transposition table legally
-    // breaks this equality: an entry stored by an earlier, deeper iteration is
-    // returned at a node the current depth would have searched shallowly, so a
-    // fixed-depth search with a table can return a score fixed-depth minimax
-    // does not — better information, not a bug. This test is about alpha-beta;
-    // asserting it with a table would be asserting something false.
+    // **It runs with the table off and with pruning off, and has to.** A
+    // transposition table legally breaks this equality: an entry stored by an
+    // earlier, deeper iteration is returned at a node the current depth would
+    // have searched shallowly, so a fixed-depth search with a table can return a
+    // score fixed-depth minimax does not — better information, not a bug.
+    // Null-move pruning breaks it for the opposite reason: it is forward pruning
+    // and throws subtrees away unproven, which is the whole point of it. This
+    // test is about alpha-beta; asserting it against either would be asserting
+    // something false.
     const cases = .{
         .{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", testDepth(3, 4) },
         // Kiwipete: castling, pins and a dense capture set.
@@ -1311,7 +1453,7 @@ test "alpha-beta returns exactly the score minimax does" {
         defer testing.allocator.destroy(s);
 
         const expected = referenceMinimax(s, case[1], 0);
-        const actual = s.negamax(case[1], 0, -infinity, infinity);
+        const actual = s.negamax(false, case[1], 0, -infinity, infinity, true);
         testing.expectEqual(expected, actual) catch |err| {
             std.debug.print("mismatch at depth {d} in {s}\n", .{ case[1], case[0] });
             return err;
@@ -1419,24 +1561,143 @@ test "a narrow window never changes which side of it the true score falls on" {
     // promises a *bound*. That bound is what a transposition table will store,
     // so it is worth pinning now: a search returning <= alpha must not be hiding
     // a score above it, and one returning >= beta must not be hiding one below.
+    //
+    // Unpruned, like the minimax test above and for the same reason: a null-move
+    // cutoff returns a bound it has not proved, which is precisely the promise
+    // being asserted here.
     const s = try searcher(kiwipete);
     defer testing.allocator.destroy(s);
 
     const depth = testDepth(2, 3);
-    const truth = s.negamax(depth, 0, -infinity, infinity);
+    const truth = s.negamax(false, depth, 0, -infinity, infinity, true);
 
     var offset: Score = -300;
     while (offset <= 300) : (offset += 100) {
         const alpha = truth + offset;
         const beta = alpha + 1;
         s.root_best = null;
-        const bound = s.negamax(depth, 0, alpha, beta);
+        const bound = s.negamax(false, depth, 0, alpha, beta, true);
         if (truth >= beta) {
             try testing.expect(bound >= beta);
         } else if (truth <= alpha) {
             try testing.expect(bound <= alpha);
         }
     }
+}
+
+test "with no piece to move, pruning is off and the score is unchanged" {
+    // The zugzwang guard, stated as an equality: where neither side has a piece
+    // the guard disables pruning outright, so the two searches must return the
+    // *same* score, not a close one. This is the guard whose absence costs games
+    // rather than nodes.
+    //
+    // **Keep the depths short of a promotion.** A new queen would give the guard
+    // something to find, and the equality would stop being about the guard.
+    const cases = .{
+        .{ "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1", testDepth(4, 6) },
+        .{ "8/8/8/3k4/8/8/3KP3/8 w - - 0 1", testDepth(4, 6) },
+        // Pawns on both sides, so the guard has to hold at every node and not
+        // only at the root.
+        .{ "8/pk6/1p6/8/8/1P6/PK6/8 w - - 0 1", testDepth(4, 6) },
+    };
+
+    inline for (cases) |case| {
+        const pruned = try searcher(case[0]);
+        defer testing.allocator.destroy(pruned);
+        try testing.expect(!hasNonPawnMaterial(&pruned.b));
+
+        const whole = try searcher(case[0]);
+        defer testing.allocator.destroy(whole);
+
+        const with = pruned.negamax(true, case[1], 0, -infinity, infinity, true);
+        const without = whole.negamax(false, case[1], 0, -infinity, infinity, true);
+        testing.expectEqual(without, with) catch |err| {
+            std.debug.print("mismatch at depth {d} in {s}\n", .{ case[1], case[0] });
+            return err;
+        };
+    }
+}
+
+test "the material guard finds a piece and only a piece" {
+    // The predicate the test above rests on, pinned separately: it is the whole
+    // zugzwang guard, and if it answered `true` everywhere that test would pass
+    // by disabling nothing.
+    const cases = .{
+        .{ "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1", false }, // pawns only, white to move
+        .{ "8/8/8/4k3/8/4K3/4P3/8 b - - 0 1", false }, // bare king, black to move
+        .{ "8/8/8/4k3/8/4K1N1/4P3/8 w - - 0 1", true }, // white has a knight
+        .{ "8/8/8/4k1n1/8/4K3/4P3/8 w - - 0 1", false }, // the knight is black's
+        .{ "8/8/8/4k1n1/8/4K3/4P3/8 b - - 0 1", true },
+    };
+
+    inline for (cases) |case| {
+        const s = try searcher(case[0]);
+        defer testing.allocator.destroy(s);
+        try testing.expectEqual(case[1], hasNonPawnMaterial(&s.b));
+    }
+}
+
+test "a repetition cannot be seen through a pass" {
+    // `pass, Nf3, pass, Ng1` returns the board to its starting position, and the
+    // two knight moves are the only entries pushed — putting that position
+    // exactly two entries back, where `repeated` looks. Without the floor the
+    // scan reads through both passes and calls a live position a draw.
+    //
+    // Driven through the real primitives rather than by setting the floor by
+    // hand: the defect is entirely in which entries the scan may reach.
+    const s = try searcher("4k1n1/8/8/8/8/8/8/4K3 w - - 0 1");
+    defer testing.allocator.destroy(s);
+    const start = s.b.hash;
+
+    const floor = s.repetition_floor;
+    const first_pass = move.makeNull(&s.b);
+    s.repetition_floor = s.history_len;
+
+    const out = Move.fromUci(&s.b, "g8f6").?;
+    const out_undo = move.makeMove(&s.b, out);
+    s.pushHistory();
+
+    const inner_floor = s.repetition_floor;
+    const second_pass = move.makeNull(&s.b);
+    s.repetition_floor = s.history_len;
+
+    const back = Move.fromUci(&s.b, "f6g8").?;
+    const back_undo = move.makeMove(&s.b, back);
+    s.pushHistory();
+
+    // The board really is back where it started — otherwise the test proves
+    // nothing about the scan.
+    try testing.expectEqual(start, s.b.hash);
+    try testing.expect(!s.repeated());
+
+    s.history_len -= 1;
+    move.unmakeMove(&s.b, back, back_undo);
+    s.repetition_floor = inner_floor;
+    move.unmakeNull(&s.b, second_pass);
+
+    s.history_len -= 1;
+    move.unmakeMove(&s.b, out, out_undo);
+    s.repetition_floor = floor;
+    move.unmakeNull(&s.b, first_pass);
+
+    try testing.expectEqual(start, s.b.hash);
+    try testing.expectEqual(@as(usize, 0), s.repetition_floor);
+
+    // And the scan still works where it is supposed to: the same two knight
+    // moves with no pass between them *are* a repetition.
+    const there = Move.fromUci(&s.b, "e1e2").?;
+    _ = move.makeMove(&s.b, there);
+    s.pushHistory();
+    const away = Move.fromUci(&s.b, "g8f6").?;
+    _ = move.makeMove(&s.b, away);
+    s.pushHistory();
+    const home = Move.fromUci(&s.b, "e2e1").?;
+    _ = move.makeMove(&s.b, home);
+    s.pushHistory();
+    const returned = Move.fromUci(&s.b, "f6g8").?;
+    _ = move.makeMove(&s.b, returned);
+    s.pushHistory();
+    try testing.expect(s.repeated());
 }
 
 test "every move of the principal variation is legal" {
@@ -1872,15 +2133,24 @@ test "iterative deepening reaches the depth it is asked for" {
 test "searching the previous best move first does not change the score" {
     // Root ordering is the one thing iterative deepening buys, and reordering a
     // move list is not allowed to change what the search concludes.
+    //
+    // **Both sides are unpruned, and the claim only holds unpruned.** Ordering
+    // moves alpha around, null-move pruning fires on the window it is given, so
+    // with pruning on a reordered list legitimately reaches a different answer.
+    // What is asserted is therefore the original claim about alpha-beta, with
+    // the real search used only to *produce* the ordering: it leaves behind
+    // `root_best`, the killers and a warm history table, which is exactly the
+    // state whose effect is in question.
+    const depth = testDepth(2, 4);
 
     const deepened = try searcher(kiwipete);
     defer testing.allocator.destroy(deepened);
-    const with_ordering = deepened.search(.{ .depth = testDepth(2, 4) }, null).score;
+    _ = deepened.search(.{ .depth = depth }, null);
+    const with_ordering = deepened.negamax(false, depth, 0, -infinity, infinity, true);
 
     const cold = try searcher(kiwipete);
     defer testing.allocator.destroy(cold);
-    cold.root_best = null;
-    const without_ordering = cold.negamax(testDepth(2, 4), 0, -infinity, infinity);
+    const without_ordering = cold.negamax(false, depth, 0, -infinity, infinity, true);
 
     try testing.expectEqual(without_ordering, with_ordering);
 }

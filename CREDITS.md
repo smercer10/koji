@@ -342,6 +342,37 @@ Two rules:
 > for SPSA, and the reserve it holds back at `movestogo 1` is neither published nor folklore but a
 > judgement call — UCI cannot say whether a time control follows that move, so no source resolves it
 
+> **the null-move observation** (that a side allowed to move twice can only improve its position, so
+> a pass gives a lower bound) — origin: *Gordon Goetsch and Murray Campbell, "Experimenting with the
+> Null Move Heuristic", AAAI Spring Symposium 1988*, via
+> https://www.chessprogramming.org/Null_Move_Observation — trail: *Don Beal reached it independently
+> and contemporaneously, "Experiments with the Null Move" (1989), generalised as "A Generalized
+> Quiescence Search Algorithm", Artificial Intelligence 43(1), 1990*
+
+> **null-move pruning** in the recursive form koji uses, and the first proposal to scale the
+> reduction with depth — origin: *Chrilly Donninger, "Null Move and Deep Search: Selective-Search
+> Heuristics for Obtuse Chess Programs", ICCA Journal 16(3), 1993*, via
+> https://www.chessprogramming.org/Null_Move_Pruning. **The paper is paywalled and was not read**;
+> this follows CPW's description of it. Ernst A. Heinz, "Adaptive Null-Move Pruning", ICCA Journal
+> 22(3):123-132, 1999, is the formalisation of the depth-scaled reduction and is paywalled likewise —
+> **koji's constants are not his**, and could not be, because two secondary summaries of that paper
+> give contradictory figures and neither could be checked against the text. They are koji's own
+> placeholders for SPSA, chosen inside the range the descriptions agree on
+
+> **the zugzwang guard, as a test for non-pawn material on the side to move** — origin: *unclear
+> (folklore; universal by the mid-1990s, and CPW names no originator — it quotes engines that
+> inherited it, which is not the same thing)* via https://www.chessprogramming.org/Zugzwang — the
+> residual risk is documented rather than solved: a material count catches the king-and-pawns case
+> and does not catch the rarer middlegame zugzwangs, which nothing cheap does
+
+> **refusing to propagate a mate score out of a null search** — origin: *"Kickstone" and H.G. Muller,
+> open-chess, "Fail Soft best practices"* via https://open-chess.org/viewtopic.php?t=3180 — forum
+> discussion rather than a paper, but a first-person account of the reasoning, which outranks a
+> secondhand summary. Muller's argument is about the transposition table: a fail-soft score returned
+> from a pass and then stored can produce a cutoff at a later node where the pass would not have been
+> allowed at all. koji stores nothing from a null-move cutoff, which closes that path from the other
+> end
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming

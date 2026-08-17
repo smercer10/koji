@@ -713,3 +713,45 @@ implementation site — restating them here is how this file stops being worth r
             and the next search still answers — rather than setting the flag by
             hand, since the defect was entirely in which predicate decides a
             search is live.
+
+### 2026-08-17 — Null-move pruning
+- branch:   feat/nmp
+- type:     SPRT
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS**
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +182.29 +/- 29.82 (nElo +241.21 +/- 32.92, LOS 100%)
+- games:    428 (266-60-102), Ptnml(0-2) [1, 14, 59, 58, 82]
+- bench:    1341926 (was 2679414)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread, 14 concurrency
+- notes:    The largest gain measured here, and the bar every later pruning
+            change is measured against. `perf stat -r 5`, `testdata/bench.epd`,
+            16 positions, depth 6, taken before the SPRT with nothing else on
+            the machine:
+
+                                nodes     instructions   insn/node      wall clock
+              main          2,679,414    4,269,408,779        1593   0.38190 s +/- 0.50%
+              nmp           1,341,926    2,195,199,508        1636   0.19577 s +/- 0.59%
+              change          -49.92%          -48.58%      +2.70%         -48.74%
+
+            **The first change here to buy nodes and wall clock together.**
+            Every ordering box before it paid time-to-depth for its node
+            reduction, because it reordered a list that still had to be
+            generated first. These nodes go before generation, so 49.9% off the
+            tree is 48.7% off the clock at 2.7% more work per node.
+
+            **+182 Elo does not validate the constants.** Nothing here says
+            R = 2 + depth/6 and a minimum depth of 3 are good values, only that
+            they beat having no pruning at all — the same caveat the history
+            constants carry. A reduction sweep is a candidate idea, not a
+            settled question, and it has no baseline until one is run.
+
+            Invariant checked, not assumed: `-Dcpu=x86_64` gives the same
+            1,341,926.
+
+            Bounds were the skill's `elo0=0 elo1=5` rather than the `[0, 10]`
+            some guides suggest for a first pruning technique. At this effect
+            size it made no difference — 428 games is the smallest sample any
+            SPRT here has needed, against 2734 for the history heuristic.

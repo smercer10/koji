@@ -329,6 +329,60 @@ pub fn unmakeMove(b: *Board, m: Move, undo: Undo) void {
     if (builtin.mode == .Debug) assert(b.consistent());
 }
 
+/// Passes the turn without moving anything. Not a chess move — there is no
+/// `Move` that encodes it and movegen will never emit one — so it takes no
+/// `Move` and lives here only because it is the same kind of operation on the
+/// same state, and its inverse has to be written beside it.
+///
+/// **The caller is responsible for it being a position where passing is
+/// meaningful.** In particular the side to move must not be in check: the null
+/// search below it would then be free to capture the king.
+pub fn makeNull(b: *Board) Undo {
+    const undo: Undo = .{
+        // Nothing is captured, and `unmakeNull` never reads this. It is set
+        // rather than left undefined so the record is a true description of what
+        // happened, which is what makes `Undo` safe to share with `makeMove`.
+        .captured = .none,
+        .castling = b.castling,
+        .ep = b.ep,
+        .halfmove = b.halfmove,
+        .fullmove = b.fullmove,
+        .hash = b.hash,
+    };
+
+    // An en passant target lives for exactly one ply and passing spends that
+    // ply: the capture it advertises is no longer available to anyone.
+    if (b.ep) |sq| b.hash ^= zobrist.ep_file[sq.file()];
+    b.ep = null;
+
+    // No pawn moved and nothing was taken, so the clock advances. Saturating for
+    // the same reason `makeMove` saturates — a FEN can start it at the ceiling.
+    b.halfmove +|= 1;
+
+    // Castling rights cannot change: they are lost by moving a king or a rook,
+    // or by capturing a rook, and none of that happened.
+
+    const us = b.side;
+    b.side = us.flip();
+    b.hash ^= zobrist.side;
+    if (us == .black) b.fullmove +|= 1;
+
+    if (builtin.mode == .Debug) assert(b.consistent());
+    return undo;
+}
+
+/// Exactly reverses `makeNull` given the record it returned.
+pub fn unmakeNull(b: *Board, undo: Undo) void {
+    b.side = b.side.flip();
+    b.castling = undo.castling;
+    b.ep = undo.ep;
+    b.halfmove = undo.halfmove;
+    b.fullmove = undo.fullmove;
+    b.hash = undo.hash;
+
+    if (builtin.mode == .Debug) assert(b.consistent());
+}
+
 /// Where the rook comes from and goes, given the king's destination. The same
 /// arithmetic serves both colors: only the rank differs, and castling does not
 /// change it.
@@ -687,6 +741,72 @@ test "the move counter saturates instead of wrapping, and unmake restores it" {
     try expectEqual(@as(u16, 7), c.fullmove);
     unmakeMove(&c, white, wu);
     try expectEqual(@as(u16, 7), c.fullmove);
+}
+
+test "a null move passes the turn and unmake gives the position back" {
+    // What a pass may change: the side, the en passant square, the two clocks.
+    // What it may not: any piece, any castling right, and the placement half of
+    // the hash. `std.meta.eql` below is what actually holds that second list —
+    // the FEN only shows what a reader would notice.
+    const passes = .{
+        // Rights survive a pass, and white passing does not touch `fullmove`.
+        .{
+            .fen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+            .after = "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 1 1",
+        },
+        // The en passant square is spent by the pass, not inherited by it, and
+        // its key has to come out of the hash with it. Black passing counts a
+        // full move.
+        .{
+            .fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+            .after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+        },
+        // Both counters at the ceiling a FEN may declare: saturating, and still
+        // reversible, exactly as for a real move.
+        .{
+            .fen = "4k3/8/8/8/8/8/8/4K3 b - - 255 65535",
+            .after = "4k3/8/8/8/8/8/8/4K3 w - - 255 65535",
+        },
+    };
+
+    var buf: [128]u8 = undefined;
+    inline for (passes) |case| {
+        const before = try Board.fromFen(case.fen);
+        var b = before;
+
+        const undo = makeNull(&b);
+
+        var w: Io.Writer = .fixed(&buf);
+        try b.writeFen(&w);
+        try expectEqualStrings(case.after, w.buffered());
+        try expect(b.consistent());
+        // Against the from-scratch reference, not against itself: the two xors
+        // above are the whole incremental update, and a hash checked only for
+        // being restored would pass with both of them missing.
+        try expectEqual(b.computeHash(), b.hash);
+
+        unmakeNull(&b, undo);
+        try expect(b.consistent());
+        try expect(std.meta.eql(before, b));
+    }
+}
+
+test "two passes in a row return the position exactly, hash included" {
+    // Not a search rule — the search forbids consecutive nulls for its own
+    // reasons — but the sharpest statement of what a pass does to the hash:
+    // flipping the side twice has to cancel, or the key is not a function of
+    // the position at all and the table will collide across colors.
+    var b = try Board.fromFen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+    const before = b;
+
+    const first = makeNull(&b);
+    const second = makeNull(&b);
+    try expectEqual(before.side, b.side);
+    try expectEqual(before.hash ^ b.hash, @as(u64, 0));
+
+    unmakeNull(&b, second);
+    unmakeNull(&b, first);
+    try expect(std.meta.eql(before, b));
 }
 
 test "the undo record still fits in the padding it had" {
