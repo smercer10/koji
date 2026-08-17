@@ -10,7 +10,11 @@ name: ci
 on:
   push:
     branches: [main]
+  # `edited` is here for the Bench trailer gate at the bottom, which reads the PR
+  # description: without it, a description edited after the last run keeps the
+  # green check the run before it earned, and the gate guards nothing.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 # Every branch reaches main through a PR, so push+pull_request covers everything
 # without running twice. A new push to a PR cancels the run it supersedes.
@@ -33,7 +37,12 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      # Full history, not the default depth 1, for the Bench trailer gate below:
+      # it diffs the PR against its base, and neither endpoint of that diff is
+      # present in a shallow checkout. Thirty-odd commits, so the cost is nil.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # Into RUNNER_TEMP, never the checkout: the toolchain ships thousands of
       # .zig files under lib/, which would dirty the tree and be picked up by the
@@ -90,22 +99,36 @@ jobs:
       # reads these lines to tell a search change from a no-op, so a gap in them
       # lands the bisect on the wrong commit.
       #
-      # Push-to-main only, and HEAD only, because that is where the rule bites:
-      # every branch arrives as a squash whose message the human writes at merge
-      # time, so the PR's own commits are drafts and the squash is the artefact.
-      # One commit per push, so `fetch-depth: 1` is enough.
-      - name: Bench trailer on search and eval commits
-        if: github.event_name == 'push'
+      # This reads the PR description, not a commit message, because the repo
+      # squashes with squash_merge_commit_message=PR_BODY: the description *is*
+      # the message the merge will write, so the artefact is fully knowable
+      # before the merge button exists. An earlier version of this gate ran on
+      # push-to-main instead, on the belief that CI could only see the result
+      # once it landed. The cost of that belief was paid twice in one evening —
+      # a failure on `main` is repaired by force-pushing an amended message
+      # through the ruleset, where a failure here is repaired by editing a text
+      # box. `ci` is a required check on `main`, so this blocks the merge.
+      - name: Bench trailer on search and eval PRs
+        if: github.event_name == 'pull_request'
+        env:
+          # Never interpolate these into the script body: `${{ }}` pastes them as
+          # shell source, so a description containing $(...) would execute here.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git show --name-only --format= HEAD | grep -qE '^src/(search|eval)\.zig$'; then
-            if ! git log -1 --format=%B HEAD | grep -qE '^Bench: [0-9]+$'; then
-              echo "::error::HEAD touches src/search.zig or src/eval.zig but carries no 'Bench: <nodes>' line. The squash body is the PR description — put the trailer on its last line."
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qE '^src/(search|eval)\.zig$'; then
+            # A description typed into the browser textarea arrives CRLF-ended,
+            # and the trailing \r alone would defeat the anchored match — on the
+            # exact path this gate tells people to use to fix it.
+            trailer=$(printf '%s\n' "$PR_BODY" | tr -d '\r' | grep -E '^Bench: [0-9]+$' || true)
+            if [ -z "$trailer" ]; then
+              echo "::error::This PR touches src/search.zig or src/eval.zig but its description carries no 'Bench: <nodes>' line. The squash body is the description — put the trailer on its last line, then push or re-edit to re-run."
               exit 1
             fi
-            echo "Bench trailer present: $(git log -1 --format=%B HEAD | grep -E '^Bench: [0-9]+$')"
+            echo "Bench trailer present: ${trailer}"
           else
-            echo "HEAD touches neither src/search.zig nor src/eval.zig; no trailer required."
+            echo "This PR touches neither src/search.zig nor src/eval.zig; no trailer required."
           fi
 
       - name: Release build
