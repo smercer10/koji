@@ -83,7 +83,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 
 ## Phase 3 — The SPRT era
 
-- [ ] Null-move pruning
+- [x] Null-move pruning
 - [ ] Late move reductions
 - [ ] Aspiration windows
 - [ ] Futility pruning / LMP
@@ -210,6 +210,37 @@ commitment to implement it.
 - Halve the entry to 8 bytes — a 16-bit key — and check the table's move for pseudo-legality before
   playing it. Twice the entries in the same memory, against the wrong-position hits the check has to
   catch. `isPseudoLegal` does not exist yet and is the risk, not the packing.
+
+From null-move pruning (2026-08-17). It landed at +182 Elo with constants nobody can defend, so the
+first three are about finding out what they should have been.
+
+- Sweep the null-move reduction. `R = 2 + depth/6` and a minimum depth of 3 are placeholders inside
+  the range the descriptions agree on, and the published record spans R=2 to R=4, fixed or scaled,
+  with its two loudest sources contradicting each other (testlog, 2026-08-17). SPRT per variant, so
+  this is machine time rather than thought — but +182 Elo says nothing about whether these are the
+  right numbers, and no later reduction work has a baseline until one of these is measured.
+- `static eval >= beta` as a precondition on the null search, with or without a depth-scaled margin.
+  Held out of the first branch because `negamax` evaluates at no interior node today, so this adds an
+  `eval.evaluate` to every one of them — a speed cost that rides in unmeasured under a strength test.
+  Worth splitting: `/bench` for the cost, SPRT for the gain.
+- Wire the reduction constants to `-Dtunables`. Mechanical now that `setoption` applies, and it is
+  what makes the sweep above an SPSA run rather than a series of hand-built binaries.
+- The threat move. On a null-move *fail-low* the opponent's reply is a threat worth an ordering boost
+  in the real search; CPW describes extracting it from the table. Additive to what landed, and
+  unrelated to the table hazard below.
+- Verification search (David-Tabibi and Netanyahu, 2002), and Diepeveen's double null move. Recorded
+  because they are the two named answers to zugzwang and a future session will find them and wonder.
+  **The evidence says do not**: Hyatt measured verification 15-20 Elo *worse* in Crafty, Costalba says
+  it "has almost nothing to do with zugzwang", and Romstad puts its value in solving composed
+  positions rather than in games. Revisit only if zugzwang failures show up empirically here.
+- Storing the null-move fail-high as a moveless lower bound. koji stores nothing, which is one of the
+  two documented answers; the other is to store it clamped to beta. Muller's argument for care is
+  that a stored null-derived bound can cut off at a later node where the pass would not have been
+  allowed at all — so the experiment is whether the extra table hits beat that.
+- `pushHistory` erodes the game history by a ply per search ply once the buffer is at capacity:
+  `root_history_len -|= 1` on every shift, which can shrink the root repetition scan below what
+  `halfmove` would allow. Pre-existing and unmeasured, found while adding the null-move floor beside
+  it. Needs a game long enough to reach 385 plies of history before it is worth anything.
 
 From the Phase 2 boundary review (2026-08-16), none taken there: that branch had to stay
 bench-neutral to prove its fixes were, and each of these moves the tree or is a refactor of its own.

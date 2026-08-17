@@ -123,13 +123,18 @@ inline fn attackedBy(comptime c: Color, b: *const Board, occ: Bitboard) Bitboard
 
 /// Whether the side to move stands in check.
 ///
-/// `generate` computes this on the way past and returns nothing, because its
-/// callers ask in exactly one place — an empty move list, where the difference
-/// between checkmate and stalemate is the difference between losing and drawing
-/// — and paying `attackersTo` once there is cheaper than widening the signature
-/// every node uses. `generateNoisy` is the opposite case and does hand it back:
-/// quiescence has to know before it can decide whether standing pat is even
-/// allowed, so asking here would be the second computation of the same answer.
+/// `generate` computes this on the way past and still returns nothing, because
+/// nothing that calls it could use the answer. The one place that needs it is an
+/// empty move list, where the difference between checkmate and stalemate is the
+/// difference between losing and drawing, and paying `attackersTo` once there is
+/// cheaper than widening a signature every node uses. Null-move pruning asks
+/// here too and asks *before* generating, precisely so that a node it prunes
+/// never generates at all — a flag handed back by `generate` would reach it too
+/// late to be of any use.
+///
+/// `generateNoisy` is the case that differs and does hand it back: quiescence
+/// has to know before it can decide whether standing pat is even allowed, so
+/// asking here would be the second computation of the same answer.
 pub fn inCheck(b: *const Board) bool {
     const us = b.side;
     const ksq = lsb(b.pieces(us, .king));
