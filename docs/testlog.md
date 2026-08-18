@@ -755,3 +755,47 @@ implementation site — restating them here is how this file stops being worth r
             some guides suggest for a first pruning technique. At this effect
             size it made no difference — 428 games is the smallest sample any
             SPRT here has needed, against 2734 for the history heuristic.
+
+### 2026-08-18 — Principal variation search and late move reductions
+- branch:   feat/pvs-lmr
+- type:     SPRT
+- bounds:   elo0=0 elo1=5 alpha=0.05 beta=0.05
+- TC:       8+0.08
+- book:     UHO_Lichess_4852_v1.epd
+- result:   **PASS**
+- LLR:      2.95 (-2.94, 2.94)
+- Elo:      +173.76 +/- 28.50 (nElo +230.88 +/- 32.10, LOS 100%)
+- games:    450 (276-68-106), Ptnml(0-2) [4, 13, 55, 77, 76]
+- bench:    353109 (was 1341926)
+- machine:  Zen 3, WSL2, ReleaseFast, PEXT path, single thread, 14 concurrency
+- notes:    **Two techniques under one measurement, so neither half is
+            attributed.** They shipped together because every published
+            description of the reductions is written on top of the scout
+            search. Splitting them is the obvious ablation and nothing here
+            stands in for it.
+
+            `perf stat -r 5`, `testdata/bench.epd`, 16 positions, depth 6,
+            taken before the SPRT with nothing else on the machine:
+
+                                nodes     instructions   insn/node      wall clock
+              main          1,341,926    2,195,199,742        1636   0.19759 s +/- 0.64%
+              pvs+lmr         353,109      882,420,867        2499   0.08835 s +/- 1.47%
+              change          -73.68%          -59.80%      +52.75%         -55.28%
+
+            **The first change here to cost materially more per node and win
+            anyway.** Every ordering box before it paid time-to-depth for its
+            nodes, and null-move removed nodes before generation at near
+            constant cost. A reduced move can be searched up to three times, so
+            insn/node rises 52.75% — and 73.68% off the tree still buys 55.28%
+            off the clock. Cost per node is not the figure to optimise here.
+
+            Two ablations run on the way, both worth not repeating. Removing
+            the cascade's middle pass *raises* bench to 386,677 nodes, so it
+            pays for itself before any soundness argument. Sharing null-move's
+            `inCheck` with the reductions' saves nothing measurable: +0.04%
+            instructions, no wall-clock change, because a node whose pass fails
+            high returns before the move loop.
+
+            Constants are round mid-range placeholders and +173 Elo does not
+            defend them, exactly as null-move's do not. 450 games, against 428
+            for null-move and 2734 for the history heuristic.

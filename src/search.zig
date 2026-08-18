@@ -134,6 +134,88 @@ fn hasNonPawnMaterial(b: *const Board) bool {
     return b.by_color[@intFromEnum(b.side)] & ~(pawns | kings) != 0;
 }
 
+/// Which of the unsound prunings an instantiation of `negamax` runs. Comptime,
+/// so the partial combinations the tests need never reach a release build.
+///
+/// **Do not collapse these back into one flag.** The zugzwang equality below is
+/// a claim about null-move's material test alone; reductions are unsound with or
+/// without material, so a single switch would make that test assert something
+/// weaker than it says, and a real failure of the guard would look identical.
+const Pruning = struct {
+    null_move: bool = false,
+    late_moves: bool = false,
+
+    /// Alpha-beta and PVS only. Both are sound, which is what makes this the
+    /// reference the soundness tests measure against.
+    const off: Pruning = .{};
+
+    /// What the engine actually searches with.
+    const all: Pruning = .{ .null_move = true, .late_moves = true };
+};
+
+/// Late move reductions: the depth at which a reduction is worth trying, and how
+/// many moves are searched at full depth first.
+///
+/// `lmr_min_moves` is an index into the search order, so the moves it exempts
+/// are the ordering's best guesses — the table move, then whatever `Ordered`
+/// ranked next. It is not a count of good moves; it is a bet that the ordering
+/// put them first, which is the whole premise of the technique.
+const lmr_min_depth: i32 = 3;
+const lmr_min_moves: usize = 3;
+
+/// The base reduction, and the divisor of the log-log term.
+///
+/// **Round placeholders, on the same footing as `nullReduction`'s.** Every
+/// published pair is fitted to a different engine's tree and they disagree with
+/// each other, so there is nothing here to copy that would mean anything —
+/// substituting one would import a number tuned against a search that is not
+/// this one. SPSA's to move in Phase 5.
+const lmr_base = 1.0;
+const lmr_divisor = 3.0;
+
+/// Both table axes. The log-log term has flattened long before 63, so the clamp
+/// in `reduction` costs a fraction of a ply and holds the table to 4KB.
+const lmr_dim = 64;
+
+/// Reduction by remaining depth and move number. Row and column zero exist so
+/// the table indexes by the real numbers rather than an offset; the guards mean
+/// nothing ever reads them.
+const lmr_table: [lmr_dim][lmr_dim]u8 = blk: {
+    @setEvalBranchQuota(lmr_dim * lmr_dim * 16);
+    var t: [lmr_dim][lmr_dim]u8 = @splat(@splat(0));
+    for (1..lmr_dim) |d| {
+        for (1..lmr_dim) |m| {
+            const term = @log(@as(f64, @floatFromInt(d))) * @log(@as(f64, @floatFromInt(m)));
+            t[d][m] = @intFromFloat(lmr_base + term / lmr_divisor);
+        }
+    }
+    break :blk t;
+};
+
+/// Whether a move is eligible to be reduced at all, on the tests that read no
+/// board memory. The one test that does — whether this node is in check — stays
+/// at the call site, where it can be asked lazily and at most once per node.
+fn reducible(depth: i32, i: usize, m: Move) bool {
+    return i >= lmr_min_moves and depth >= lmr_min_depth and !m.kind.isNoisy();
+}
+
+/// How much depth a late move gives up. `move_number` is one-based.
+///
+/// **The PV discount answers a reported failure, not an intuition** — mACE
+/// Chess records a version that reduced PV nodes playing weaker until the
+/// restriction went in. The older rule is harder still: no reduction at a PV
+/// node at all.
+///
+/// **The clamp is not a tuning knob.** `depth - 2` keeps the reduced search at
+/// depth 1 or more. Dropping a node straight to the horizon is futility
+/// pruning — a different technique, on the roadmap separately.
+fn reduction(depth: i32, move_number: usize, is_pv: bool) i32 {
+    const d: usize = @min(@as(usize, @intCast(depth)), lmr_dim - 1);
+    const m: usize = @min(move_number, lmr_dim - 1);
+    const r: i32 = @as(i32, lmr_table[d][m]) - @intFromBool(is_pv);
+    return std.math.clamp(r, 0, depth - 2);
+}
+
 /// A move's share of the clock, in milliseconds.
 ///
 /// Two limits rather than one. The basic published allocation is a single
@@ -559,7 +641,7 @@ pub const Searcher = struct {
         const target = @min(limits.depth, max_ply);
         var depth: u8 = 1;
         while (depth <= target) : (depth += 1) {
-            const score = s.negamax(true, depth, 0, -infinity, infinity, true);
+            const score = s.negamax(.all, depth, 0, -infinity, infinity, true);
             if (s.stopped) break;
 
             assert(s.pv_len[0] > 0);
@@ -603,18 +685,26 @@ pub const Searcher = struct {
         return result;
     }
 
-    /// `prune` is comptime and `true` everywhere the engine actually searches.
-    /// Null-move pruning below is **unsound** by design, and three tests at the
-    /// bottom of this file assert that alpha-beta returns what an unpruned
-    /// reference returns, or an honest bound — claims still true of alpha-beta,
-    /// so they run with `prune` false, exactly as they already run against a
-    /// disabled table. Comptime, so the unpruned instantiation is reachable only
-    /// from those tests and never exists in a release build.
+    /// `prune` is comptime and `.all` everywhere the engine actually searches.
+    /// Both prunings it selects — the null move below, and the reductions in the
+    /// move loop — are **unsound** by design, and the tests at the bottom of
+    /// this file assert that alpha-beta returns what an unpruned reference
+    /// returns, or an honest bound. Those claims are still true of alpha-beta
+    /// and of PVS, so they run with `.off`, exactly as they already run against
+    /// a disabled table. Comptime, so no partial instantiation exists in a
+    /// release build.
+    ///
+    /// **PVS is not behind this flag, and that is the point.** It returns the
+    /// same score plain alpha-beta does, so leaving it always on puts it inside
+    /// the reference tests rather than beside them — the equality at the bottom
+    /// of this file is what proves the scout searches and their re-search are
+    /// right, and it would prove nothing about them if they switched off with
+    /// the rest.
     ///
     /// `can_null` is runtime: `false` only in the child of a pass.
     fn negamax(
         s: *Searcher,
-        comptime prune: bool,
+        comptime prune: Pruning,
         depth: i32,
         ply: u32,
         alpha_in: Score,
@@ -701,10 +791,12 @@ pub const Searcher = struct {
         //     `attackersTo` over the whole army, and every test before it is
         //     integer work that can short-circuit it away.
         //
-        // **No PV-node guard, and adding the usual one would disable this
-        // entirely.** It reads "only at zero-window nodes", and koji has neither
-        // PVS nor aspiration windows, so every node here has a full window. It
-        // becomes meaningful when PVS lands.
+        // **No PV-node guard, though one is now expressible.** The usual rule
+        // reads "only at zero-window nodes", which was vacuous until PVS landed
+        // and every node had a full window. It is not vacuous any more —
+        // restricting null-move to `!is_pv` is a real change, and one that would
+        // have confounded the branch that made it possible. ROADMAP.md carries
+        // it as its own test.
         //
         // origin: the null-move observation — Gordon Goetsch and Murray
         //         Campbell, AAAI Spring Symposium 1988, with independent
@@ -719,7 +811,7 @@ pub const Searcher = struct {
         // origin: refusing to propagate a mate score out of a null search —
         //         "Kickstone" and H.G. Muller, open-chess "Fail Soft best
         //         practices" via https://open-chess.org/viewtopic.php?t=3180
-        if (prune and can_null and ply > 0 and depth >= nmp_min_depth and
+        if (prune.null_move and can_null and ply > 0 and depth >= nmp_min_depth and
             hasNonPawnMaterial(&s.b) and !movegen.inCheck(&s.b))
         {
             const undo = move.makeNull(&s.b);
@@ -780,12 +872,122 @@ pub const Searcher = struct {
         // first, and the table would hand that back as the node's best move.
         var best_move = o.next(0);
 
+        // A window wider than one point means this node is on the principal
+        // variation. **The test only says anything because of the scout
+        // searches below** — before them every node in koji had a full window,
+        // null-move's verification search being the single exception, so this
+        // would have answered `true` almost everywhere and distinguished
+        // nothing.
+        const is_pv = beta - alpha > 1;
+
+        // Whether *this* node is in check, asked once for the whole loop rather
+        // than per reducible move: it is an `attackersTo` over the enemy army.
+        //
+        // **Sharing it with null-move's own check above was tried and is not
+        // worth it.** Both guards start at depth 3 so the overlap looks large,
+        // but a node whose pass fails high returns before this loop and a node
+        // below depth 3 never reduces — measured at +0.04% instructions and no
+        // wall-clock change, against carrying the answer across half the node.
+        var in_check: ?bool = null;
+
         for (0..o.list.len) |i| {
             const m = if (i == 0) best_move else o.next(i);
+
+            // Late move reductions: the ordering's late guesses are searched
+            // shallower, and only the ones that come back looking good are paid
+            // for in full. Unsound like null-move, and behind the same
+            // `comptime prune` for the same reason.
+            //
+            // Each guard, and what removing it costs:
+            //   - `i`: the moves the ordering ranked highest are the ones this
+            //     bet is *against*. Reducing them refutes the premise.
+            //   - `depth`: below the reduction there is no depth left to give
+            //     up, and `reduction`'s clamp would return 0 anyway.
+            //   - noisy: a capture or promotion is tactically loaded whatever
+            //     the ordering thinks of it, and free to test — `kind` is in
+            //     the move, so this reads no board memory.
+            //   - `inCheck`: every evasion is forced and none of them are
+            //     "late". Asked **last**, and lazily, because it is the only
+            //     guard here that touches the board.
+            //
+            // **Decided before `makeMove`.** `inCheck` has to be asked about
+            // this node; one line down the board belongs to the child.
+            //
+            // origin: late move reductions, in the form that spread — Fabien
+            //         Letouzey (Fruit) and Tord Romstad (Glaurung), 2005
+            //         via https://www.chessprogramming.org/Late_Move_Reductions
+            // origin: reducing late non-tactical moves, earliest description —
+            //         David Levy, David Broughton and Mark Taylor, "The SEX
+            //         Algorithm in Computer Chess", ICCA Journal 12(1), 1989,
+            //         as CPW's own retrospective reading of it rather than a
+            //         claim by its authors or by the two above
+            //         via https://www.chessprogramming.org/SEX_Algorithm
+            // origin: the log-log reduction formula — unclear. Several engines
+            //         publish the same shape with mutually inconsistent
+            //         constants and CPW names no originator; the common
+            //         attribution could not be confirmed from any description.
+            const r: i32 = blk: {
+                if (!prune.late_moves) break :blk 0;
+                if (!reducible(depth, i, m)) break :blk 0;
+                if (in_check == null) in_check = movegen.inCheck(&s.b);
+                if (in_check.?) break :blk 0;
+                break :blk reduction(depth, i + 1, is_pv);
+            };
+
             const undo = move.makeMove(&s.b, m);
             s.pushHistory();
 
-            const score = -s.negamax(prune, depth - 1, ply + 1, -beta, -alpha, true);
+            // Principal variation search. The first move is the ordering's
+            // best guess and gets the real window; the rest only have to answer
+            // "does this beat alpha?", which a zero-width window settles for a
+            // fraction of the work.
+            //
+            // **A yes from either narrowed pass is a bound, not a score, and
+            // accepting one as a score is the classic bug here.** A zero window
+            // proves only which side of alpha the value falls; a reduced search
+            // proves that about a shallower tree than the caller asked for. So
+            // each pass only widens what the one before it left open, and
+            // nothing raises alpha until a full-depth full-window search says
+            // so. Dropping the middle pass compiles, keeps every test green,
+            // and lets a cutoff rest on a reduced score that is then stored at
+            // this node's full depth.
+            //
+            // **The fail-low direction has no such guard, by design.** A late
+            // move that stays at or below alpha is never re-searched, so at an
+            // all-node its reduced score can become `best` and be stored as an
+            // upper bound at full depth — a bound the reduced tree did not
+            // prove. That is what makes the technique unsound rather than
+            // merely selective, and it is why `prune` is comptime and the
+            // reference tests run without it.
+            //
+            // **The name and the algorithm have different authors**, and
+            // collapsing them into one credit would hand the inventors' work to
+            // the better-known name.
+            //
+            // origin: the algorithm — Raphael Finkel and John Philip Fishburn,
+            //         "Palphabeta", Parallel Alpha-Beta Search on Arachne, IEEE
+            //         ICPP 1980, renamed "Calphabeta" in Fishburn's 1981
+            //         Wisconsin-Madison thesis. The same Fishburn credited for
+            //         fail-soft below.
+            // origin: the name "principal variation search" — Tony Marsland and
+            //         Murray Campbell, Parallel Search of Strongly Ordered Game
+            //         Trees, ACM Computing Surveys 14(4), 1982, who explicitly
+            //         name Fishburn's routine as what they are renaming
+            //         via https://www.chessprogramming.org/Principal_Variation_Search
+            // origin: independently derived and algorithmically identical —
+            //         Alexander Reinefeld's NegaScout, ICCA Journal 6(4), 1983,
+            //         built on Judea Pearl's Scout, AAAI 1980
+            //         via https://www.chessprogramming.org/NegaScout
+            const score = if (i == 0)
+                -s.negamax(prune, depth - 1, ply + 1, -beta, -alpha, true)
+            else scout: {
+                var sc = -s.negamax(prune, depth - 1 - r, ply + 1, -(alpha + 1), -alpha, true);
+                if (sc > alpha and r > 0)
+                    sc = -s.negamax(prune, depth - 1, ply + 1, -(alpha + 1), -alpha, true);
+                if (sc > alpha and sc < beta)
+                    sc = -s.negamax(prune, depth - 1, ply + 1, -beta, -alpha, true);
+                break :scout sc;
+            };
 
             s.history_len -= 1;
             move.unmakeMove(&s.b, m, undo);
@@ -1453,7 +1655,7 @@ test "alpha-beta returns exactly the score minimax does" {
         defer testing.allocator.destroy(s);
 
         const expected = referenceMinimax(s, case[1], 0);
-        const actual = s.negamax(false, case[1], 0, -infinity, infinity, true);
+        const actual = s.negamax(.off, case[1], 0, -infinity, infinity, true);
         testing.expectEqual(expected, actual) catch |err| {
             std.debug.print("mismatch at depth {d} in {s}\n", .{ case[1], case[0] });
             return err;
@@ -1569,14 +1771,14 @@ test "a narrow window never changes which side of it the true score falls on" {
     defer testing.allocator.destroy(s);
 
     const depth = testDepth(2, 3);
-    const truth = s.negamax(false, depth, 0, -infinity, infinity, true);
+    const truth = s.negamax(.off, depth, 0, -infinity, infinity, true);
 
     var offset: Score = -300;
     while (offset <= 300) : (offset += 100) {
         const alpha = truth + offset;
         const beta = alpha + 1;
         s.root_best = null;
-        const bound = s.negamax(false, depth, 0, alpha, beta, true);
+        const bound = s.negamax(.off, depth, 0, alpha, beta, true);
         if (truth >= beta) {
             try testing.expect(bound >= beta);
         } else if (truth <= alpha) {
@@ -1585,11 +1787,16 @@ test "a narrow window never changes which side of it the true score falls on" {
     }
 }
 
-test "with no piece to move, pruning is off and the score is unchanged" {
+test "with no piece to move, null-move pruning is off and the score is unchanged" {
     // The zugzwang guard, stated as an equality: where neither side has a piece
-    // the guard disables pruning outright, so the two searches must return the
+    // the guard disables the pass outright, so the two searches must return the
     // *same* score, not a close one. This is the guard whose absence costs games
     // rather than nodes.
+    //
+    // **Only `null_move` is on, and the equality needs that.** Reductions are
+    // unsound with or without material on the board, so an instantiation that
+    // ran them too would break this equality for a reason that has nothing to do
+    // with zugzwang — and it would look exactly like the guard failing.
     //
     // **Keep the depths short of a promotion.** A new queen would give the guard
     // something to find, and the equality would stop being about the guard.
@@ -1609,8 +1816,8 @@ test "with no piece to move, pruning is off and the score is unchanged" {
         const whole = try searcher(case[0]);
         defer testing.allocator.destroy(whole);
 
-        const with = pruned.negamax(true, case[1], 0, -infinity, infinity, true);
-        const without = whole.negamax(false, case[1], 0, -infinity, infinity, true);
+        const with = pruned.negamax(.{ .null_move = true }, case[1], 0, -infinity, infinity, true);
+        const without = whole.negamax(.off, case[1], 0, -infinity, infinity, true);
         testing.expectEqual(without, with) catch |err| {
             std.debug.print("mismatch at depth {d} in {s}\n", .{ case[1], case[0] });
             return err;
@@ -1634,6 +1841,101 @@ test "the material guard finds a piece and only a piece" {
         const s = try searcher(case[0]);
         defer testing.allocator.destroy(s);
         try testing.expectEqual(case[1], hasNonPawnMaterial(&s.b));
+    }
+}
+
+test "a reduction always leaves at least one ply to search" {
+    // The clamp, stated exhaustively rather than argued. A reduction that ate
+    // the whole remaining depth would drop the node straight into quiescence —
+    // that is futility pruning wearing this technique's clothes, a different
+    // claim with a different justification, and not one this code is making.
+    var depth: i32 = lmr_min_depth;
+    while (depth <= max_ply) : (depth += 1) {
+        for ([_]bool{ false, true }) |is_pv| {
+            var n: usize = lmr_min_moves + 1;
+            while (n <= movegen.max_moves) : (n += 1) {
+                const r = reduction(depth, n, is_pv);
+                try testing.expect(r >= 0);
+                try testing.expect(depth - 1 - r >= 1);
+            }
+        }
+    }
+}
+
+test "the reduction grows with depth and move number, and is not always zero" {
+    // Monotone in both arguments: the premise is that a deeper search and a
+    // later move can each afford to give up more. Both hold unconditionally —
+    // growing `depth` raises the table entry *and* the clamp ceiling, growing
+    // the move number raises the entry under a fixed ceiling.
+    //
+    // **The last assertion is the one that matters.** A formula that returned
+    // zero everywhere would satisfy every other property asserted in this file
+    // while disabling the technique outright, and the suite would stay green.
+    var any_nonzero = false;
+    var depth: i32 = lmr_min_depth;
+    while (depth < lmr_dim - 1) : (depth += 1) {
+        var n: usize = lmr_min_moves + 1;
+        while (n < lmr_dim - 1) : (n += 1) {
+            const r = reduction(depth, n, false);
+            if (r > 0) any_nonzero = true;
+            try testing.expect(reduction(depth + 1, n, false) >= r);
+            try testing.expect(reduction(depth, n + 1, false) >= r);
+        }
+    }
+    try testing.expect(any_nonzero);
+}
+
+test "a node on the variation gives up less depth than one off it" {
+    // mACE Chess reports a version that reduced PV nodes playing measurably
+    // weaker until the restriction went in. The modern form softens that from a
+    // ban to a discount; what is pinned here is only that it stays a discount
+    // and never becomes a surcharge.
+    var depth: i32 = lmr_min_depth;
+    while (depth < lmr_dim - 1) : (depth += 1) {
+        var n: usize = lmr_min_moves + 1;
+        while (n < lmr_dim - 1) : (n += 1) {
+            try testing.expect(reduction(depth, n, true) <= reduction(depth, n, false));
+        }
+    }
+}
+
+test "the late-move guard exempts what the ordering ranked first" {
+    // Each threshold is checked at the boundary and one short of it, so a guard
+    // written with the wrong comparison fails here rather than silently
+    // reducing one move too many.
+    const quiet: Move = .init(.e2, .e4, .double_push);
+    const noisy: Move = .init(.e2, .d3, .capture);
+
+    try testing.expect(reducible(lmr_min_depth, lmr_min_moves, quiet));
+    try testing.expect(!reducible(lmr_min_depth - 1, lmr_min_moves, quiet));
+    try testing.expect(!reducible(lmr_min_depth, lmr_min_moves - 1, quiet));
+    // A capture is exempt wherever it lands in the order, however deep.
+    try testing.expect(!reducible(lmr_min_depth, lmr_min_moves, noisy));
+    try testing.expect(!reducible(max_ply, movegen.max_moves, noisy));
+}
+
+test "a forced mate survives the depth its own line is reduced by" {
+    // End-to-end with reductions on, at depths well past the mate so they have
+    // room to bite — the existing mate tests sit too shallow to reduce much.
+    //
+    // **This does not cover the cascade's middle pass.** Removing that pass was
+    // tried here and left this test, and every other gate, green. What is
+    // missing is an assertion that no cutoff rests on a reduced search; the
+    // roadmap carries it.
+    const cases = .{
+        .{ mate_in_1, testDepth(5, 7), @as(i32, 1) },
+        .{ mate_in_2, testDepth(6, 8), @as(i32, 2) },
+    };
+
+    inline for (cases) |case| {
+        const s = try searcher(case[0]);
+        defer testing.allocator.destroy(s);
+
+        const result = s.search(.{ .depth = case[1] }, null);
+        testing.expectEqual(@as(?i32, case[2]), mateDistance(result.score)) catch |err| {
+            std.debug.print("mate distance wrong at depth {d} in {s}\n", .{ case[1], case[0] });
+            return err;
+        };
     }
 }
 
@@ -2146,11 +2448,11 @@ test "searching the previous best move first does not change the score" {
     const deepened = try searcher(kiwipete);
     defer testing.allocator.destroy(deepened);
     _ = deepened.search(.{ .depth = depth }, null);
-    const with_ordering = deepened.negamax(false, depth, 0, -infinity, infinity, true);
+    const with_ordering = deepened.negamax(.off, depth, 0, -infinity, infinity, true);
 
     const cold = try searcher(kiwipete);
     defer testing.allocator.destroy(cold);
-    const without_ordering = cold.negamax(false, depth, 0, -infinity, infinity, true);
+    const without_ordering = cold.negamax(.off, depth, 0, -infinity, infinity, true);
 
     try testing.expectEqual(without_ordering, with_ordering);
 }

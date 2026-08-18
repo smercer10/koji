@@ -84,7 +84,7 @@ carries; instructions per `generate()` call recorded as the never-regress baseli
 ## Phase 3 — The SPRT era
 
 - [x] Null-move pruning
-- [ ] Late move reductions
+- [x] Principal variation search and late move reductions
 - [ ] Aspiration windows
 - [ ] Futility pruning / LMP
 - [ ] Singular extensions
@@ -241,6 +241,42 @@ first three are about finding out what they should have been.
   `root_history_len -|= 1` on every shift, which can shrink the root repetition scan below what
   `halfmove` would allow. Pre-existing and unmeasured, found while adding the null-move floor beside
   it. Needs a game long enough to reach 385 plies of history before it is worth anything.
+
+From principal variation search and late move reductions (2026-08-18). The first three are the
+adjustments that were deliberately left out of that branch rather than tried and rejected.
+
+- Scale the reduction by the moving side's history score — reduce a quiet the search keeps liking by
+  less, one it keeps declining by more. Standard, and the table is already in scope at the site; held
+  back because it is an independent tuning term with no reported failure behind it, unlike the PV
+  adjustment, which makes it the cleanest first ablation on top of what landed.
+- Turn on null-move's PV guard, which PVS makes expressible for the first time. The comment at the
+  site has said since the null-move branch that the usual "only at zero-window nodes" rule would have
+  disabled the technique outright rather than restricted it; that is no longer true. Restricting
+  null-move is its own strength change and would have confounded this branch's measurement.
+- Sweep the reduction constants. `1.0` and `3.0` and the two thresholds are round placeholders
+  chosen mid-range, on exactly the footing the null-move reduction is on, and the SPRT that passed
+  says nothing about them. Wire them to `-Dtunables` first and this becomes SPSA rather than a series
+  of hand-built binaries — which is also the cheaper way to run the null-move sweep already listed
+  above, so the wiring is worth doing once for both.
+- `improving` and cut-node adjustments to the reduction. Both are standard and both need machinery
+  koji does not have: a per-ply static eval stack, and node-type tagging threaded through the search.
+  Blocked on that, not on the adjustment.
+- No unit test covers the full-depth zero-window re-search — the cascade's middle pass. Removing it
+  leaves every other gate green (verified, 2026-08-18) while letting a beta cutoff be taken on a
+  reduced-depth score and stored at full depth, which is the transposition-table hazard the research
+  flagged. It is load-bearing for speed as well: without it `bench` costs 386,677 nodes against
+  353,109. What is missing is an assertion that no cutoff rests on a reduced search, and the obvious
+  form of it — a counter in the move loop — costs something in the hot path.
+- The *fail-low* direction of that same hazard has no guard at all, and unlike the above that is by
+  design rather than an omission: a late move at or below alpha is never re-searched, so at an
+  all-node its reduced score can become the node's best and be stored as an upper bound at full
+  depth. Every engine that reduces carries this; it is what makes the technique unsound rather than
+  merely selective. Worth an experiment rather than a fix — storing such a node at the reduced depth
+  instead, against the table hits that costs.
+- Sharing null-move's `inCheck` with the reductions' — **measured and rejected**, 2026-08-18. Both
+  guards start at depth 3 so the redundancy looks worth removing, but a node whose pass fails high
+  returns before the move loop and a node below depth 3 never reduces: +0.04% instructions and no
+  wall-clock change. Recorded so it is not re-derived as an obvious win.
 
 From the Phase 2 boundary review (2026-08-16), none taken there: that branch had to stay
 bench-neutral to prove its fixes were, and each of these moves the tree or is a refactor of its own.
