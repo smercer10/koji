@@ -373,6 +373,43 @@ Two rules:
 > allowed at all. koji stores nothing from a null-move cutoff, which closes that path from the other
 > end
 
+> **principal variation search** — origin: *Raphael Finkel and John Philip Fishburn, "Parallel
+> Alpha-Beta Search on Arachne", IEEE ICPP 1980, as "Palphabeta", renamed "Calphabeta" in Fishburn's
+> 1981 Wisconsin-Madison thesis*; **the name** is *Tony Marsland and Murray Campbell, "Parallel
+> Search of Strongly Ordered Game Trees", ACM Computing Surveys 14(4), 1982*, via
+> https://www.chessprogramming.org/Principal_Variation_Search — the two are separated deliberately:
+> Marsland and Campbell's paper names Fishburn's routine as the thing it is renaming, so crediting
+> them with the algorithm would hand the inventors' work to the better-known citation. Fishburn is
+> the same author koji credits for fail-soft alpha-beta. **The 1982 paper was not read** — the PDF
+> could not be rendered by the tools available, so this follows CPW's reproduction of its text —
+> trail: *Alexander Reinefeld's NegaScout, "An Improvement to the Scout Tree-Search Algorithm", ICCA
+> Journal 6(4), 1983, is algorithmically identical and was derived independently, from Judea Pearl's
+> Scout, AAAI 1980; CPW's secondary sources treat PVS and NegaScout as the same search under two
+> names* via https://www.chessprogramming.org/NegaScout
+
+> **late move reductions** — origin: *unclear for the technique's invention; popularised by Fabien
+> Letouzey (Fruit) and Tord Romstad (Glaurung) in 2005, which is what CPW credits* via
+> https://www.chessprogramming.org/Late_Move_Reductions — trail: *David Levy, David Broughton and
+> Mark Taylor, "The SEX Algorithm in Computer Chess", ICCA Journal 12(1), 1989, reduced late
+> non-tactical moves more than a decade earlier* via https://www.chessprogramming.org/SEX_Algorithm
+> — **recorded as CPW's own retrospective reading of that paper**, not as a claim by its authors or
+> by Letouzey and Romstad, neither of whom cites it. Fruit is GPL-2.0 and Glaurung GPL-3.0; both were
+> checked, and neither was read
+
+> **the log-log reduction formula** `a + ln(depth) * ln(move) / b` — origin: *unclear*. Several
+> engines publish the same shape with mutually inconsistent constants and CPW names no originator for
+> the shape itself. Folklore credits Stockfish; that could not be confirmed from any description, and
+> the only sources that would have settled it were derived from reading its source, so it is recorded
+> as unclear rather than guessed. **koji's constants are its own** — round, mid-range placeholders
+> for SPSA, because every published pair is a value fitted to a different engine's search tree
+
+> **reducing a node on the principal variation less than one off it** — origin: *unclear (CPW lists
+> the PV node among several inputs to the reduction formula and names no originator)* via
+> https://www.chessprogramming.org/Late_Move_Reductions — the reason koji applies it rather than the
+> older blanket ban on reducing PV nodes is a reported failure, not a preference: *mACE Chess*
+> records a version that reduced PV nodes playing measurably weaker until the restriction went in
+> via http://macechess.blogspot.com/2010/08/implementing-late-move-reductions.html
+
 ## Clean room
 
 Agents do not open other engines' source code. Research is from descriptions: the Chess Programming
